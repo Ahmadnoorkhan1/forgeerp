@@ -13,6 +13,8 @@ pub mod scheduler;
 
 pub use job::AiJob;
 pub use result::{AiError, AiResult};
-pub use scheduler::{AiScheduler, LocalAiScheduler, TenantScope};
+pub use scheduler::{
+    AiScheduler, InventoryItemSnapshot, InventorySnapshot, LocalAiScheduler, ReadModelReader, TenantScope,
+};
 
 
