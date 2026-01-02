@@ -2,6 +2,7 @@
 
 pub mod event_bus;
 pub mod event_store;
+pub mod command_dispatcher;
 
 /// Database adapters (connection pools, repositories, migrations wiring).
 pub mod db {}

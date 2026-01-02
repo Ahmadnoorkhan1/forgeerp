@@ -17,18 +17,50 @@ ForgeERP aims to be a modern, developer-friendly ERP backend:
 
 ForgeERP is a Cargo workspace with focused crates under `crates/`:
 
-- **`crates/core`**: domain entities, value objects, invariants  
+- **`crates/core`**: **domain foundation** (IDs, errors, aggregate semantics)  
   - Read more: `crates/core/README.md`
-- **`crates/events`**: domain & integration events  
+- **`crates/events`**: **event sourcing + CQRS mechanics** (immutable, versioned, append-only)  
   - Read more: `crates/events/README.md`
 - **`crates/auth`**: users, roles, permissions, JWT logic (future)  
   - Read more: `crates/auth/README.md`
-- **`crates/infra`**: database/redis/config/external services (future)  
+- **`crates/infra`**: infrastructure adapters (event store, event bus, future DB/Redis/etc)  
   - Read more: `crates/infra/README.md`
 - **`crates/observability`**: shared tracing/logging setup  
   - Read more: `crates/observability/README.md`
 - **`crates/api`**: Axum HTTP server + routing + request/response mapping  
   - Read more: `crates/api/README.md`
+
+## Architecture laws (hard constraints)
+
+These are non-negotiable boundaries enforced across the codebase:
+
+- **`core` has zero infrastructure dependencies**
+- **`events` defines mechanics, not business**
+- **`infra` depends on `core` + `events`, never the reverse**
+- **API only orchestrates**
+- **Multi-tenancy is enforced at the event level**
+- **Events are immutable, versioned, append-only**
+
+## Event-sourced command flow (current building blocks)
+
+ForgeERP is being built around an event-sourced execution model:
+
+**Command → Load events → Rehydrate aggregate → Decide → Persist → Publish**
+
+In the current repo state, these responsibilities live in:
+
+- **Domain semantics (`crates/core`)**
+  - `Aggregate` trait separates:
+    - **decision**: `handle(&self, cmd) -> Vec<Event>` (no mutation)
+    - **mutation**: `apply(&mut self, event)` (state evolution)
+  - Optimistic concurrency via `ExpectedVersion`
+- **Mechanics (`crates/events`)**
+  - `Event` + `EventEnvelope` (tenant-scoped metadata + payload)
+  - `EventBus` + `InMemoryEventBus`
+- **Infrastructure (`crates/infra`)**
+  - `EventStore` trait + `InMemoryEventStore`
+  - `PublishingEventStore` adapter (publish only after successful append)
+  - `CommandDispatcher` (orchestrates the full pipeline without HTTP/auth)
 
 ## Quickstart (local, without Docker)
 
@@ -90,6 +122,20 @@ Environment variables (see `.env.example`):
   - `DATABASE_URL` (Docker uses hostname `postgres`)
 - **Redis**
   - `REDIS_URL` (Docker uses hostname `redis`)
+
+## Development building blocks (what exists today)
+
+- **In-memory event store**: `forgeerp_infra::event_store::InMemoryEventStore`
+- **In-memory event bus**: `forgeerp_events::InMemoryEventBus`
+- **Command dispatcher**: `forgeerp_infra::command_dispatcher::CommandDispatcher`
+  - Handles concurrency conflicts + deterministic domain validation errors
+
+## Optional features
+
+- **Redis pub/sub event bus** (infra feature flag):
+  - Feature: `forgeerp-infra/redis`
+  - Implementation: `forgeerp_infra::event_bus::redis_pubsub::RedisPubSubEventBus`
+  - Note: Redis Pub/Sub is **not durable**; it’s intended for local/dev. Durable delivery would use a different mechanism (e.g., Redis Streams / a broker) later.
 
 ## Observability
 
