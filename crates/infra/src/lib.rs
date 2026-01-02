@@ -1,5 +1,7 @@
 //! Infrastructure layer: DB, Redis, config, external services.
 
+pub mod event_store;
+
 /// Database adapters (connection pools, repositories, migrations wiring).
 pub mod db {}
 

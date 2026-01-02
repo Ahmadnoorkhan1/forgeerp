@@ -232,6 +232,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "forgeerp-core",
+ "forgeerp-events",
  "serde",
  "serde_json",
  "thiserror",
