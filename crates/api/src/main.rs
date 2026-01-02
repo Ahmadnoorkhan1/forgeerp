@@ -6,14 +6,17 @@ use axum::{
     Json,
 };
 use tower::ServiceBuilder;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 use axum::routing::post;
 use axum::extract::{Path, Extension};
 use chrono::Utc;
 
 use forgeerp_auth::{CommandAuthorization, Permission};
-use forgeerp_core::AggregateId;
+use forgeerp_core::{AggregateId, TenantId};
 use forgeerp_events::{EventBus, EventEnvelope, InMemoryEventBus};
+use forgeerp_infra::ai::{InMemoryAiInsightSink, InventoryAnomalyRunner, InventoryAnomalyRunnerHandle};
 use forgeerp_infra::command_dispatcher::{CommandDispatcher, DispatchError};
 use forgeerp_infra::event_store::InMemoryEventStore;
 use forgeerp_infra::projections::inventory_stock::{InventoryReadModel, InventoryStockProjection};
@@ -42,16 +45,42 @@ async fn main() {
     let projection: Arc<InventoryStockProjection<_>> =
         Arc::new(InventoryStockProjection::new(rm_store));
 
+    // AI wiring (dev): in-memory insights + per-tenant anomaly runners.
+    //
+    // - Read-only API endpoints can expose these as "insights".
+    // - AI failures are isolated and must not affect core workflows.
+    let ai_sink: Arc<InMemoryAiInsightSink> = Arc::new(InMemoryAiInsightSink::new());
+    let ai_runners: Arc<Mutex<HashMap<TenantId, InventoryAnomalyRunnerHandle>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let ai_runner_cfg = InventoryAnomalyRunner::default();
+
     // Background subscriber: bus -> projection
     {
         let sub = bus.subscribe();
         let projection = projection.clone();
+        let ai_sink = ai_sink.clone();
+        let ai_runners = ai_runners.clone();
         tokio::task::spawn_blocking(move || loop {
             match sub.recv() {
                 Ok(env) => {
                     if let Err(e) = projection.apply_envelope(&env) {
                         tracing::warn!("projection apply failed: {e}");
+                        continue;
                     }
+
+                    // Event-triggered AI execution (after successful projection update).
+                    // Backpressure: triggers are coalesced. Failures are logged inside the runner.
+                    let tenant_id = env.tenant_id();
+                    let mut runners = ai_runners.lock().unwrap();
+                    let handle = runners.entry(tenant_id).or_insert_with(|| {
+                        ai_runner_cfg.spawn_for_tenant(
+                            "ai.inventory_anomaly",
+                            tenant_id,
+                            projection.clone(),
+                            ai_sink.clone(),
+                        )
+                    });
+                    handle.trigger();
                 }
                 Err(_) => break,
             }
@@ -59,7 +88,7 @@ async fn main() {
     }
 
     let dispatcher: Arc<CommandDispatcher<_, _>> = Arc::new(CommandDispatcher::new(store, bus));
-    let services = Arc::new(AppServices { dispatcher, projection });
+    let services = Arc::new(AppServices { dispatcher, projection, ai_sink });
 
     // Protected routes: require auth + tenant context.
     let protected = Router::new()
@@ -104,10 +133,13 @@ async fn whoami(
 struct AppServices {
     dispatcher: Arc<CommandDispatcher<Arc<InMemoryEventStore>, Arc<InMemoryEventBus<EventEnvelope<serde_json::Value>>>>>,
     projection: Arc<InventoryStockProjection<Arc<InMemoryTenantStore<InventoryItemId, InventoryReadModel>>>>,
+    ai_sink: Arc<InMemoryAiInsightSink>,
 }
 
 fn inventory_router() -> Router {
     Router::new()
+        .route("/anomalies", get(get_inventory_anomalies))
+        .route("/{id}/insights", get(get_inventory_item_insights))
         .route("/items", post(create_item))
         .route("/items/{id}/adjust", post(adjust_stock))
         .route("/items/{id}", get(get_item))
@@ -258,6 +290,81 @@ async fn get_item(
         Some(rm) => (StatusCode::OK, Json(read_model_to_json(rm))).into_response(),
         None => json_error(StatusCode::NOT_FOUND, "not_found", "item not found"),
     }
+}
+
+async fn get_inventory_anomalies(
+    Extension(services): Extension<Arc<AppServices>>,
+    Extension(tenant): Extension<forgeerp_api::context::TenantContext>,
+) -> axum::response::Response {
+    let tenant_id = tenant.tenant_id();
+    let all = services.ai_sink.all();
+
+    let mut anomalies: Vec<serde_json::Value> = Vec::new();
+    for (t, r) in all {
+        if t != tenant_id {
+            continue;
+        }
+        if r.metadata.get("kind").and_then(|v| v.as_str()) != Some("inventory.anomaly_detection") {
+            continue;
+        }
+        if let Some(arr) = r.metadata.get("anomalies").and_then(|v| v.as_array()) {
+            anomalies.extend(arr.iter().cloned());
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "kind": "insights",
+            "insight_type": "inventory.anomalies",
+            "count": anomalies.len(),
+            "anomalies": anomalies,
+        })),
+    )
+        .into_response()
+}
+
+async fn get_inventory_item_insights(
+    Extension(services): Extension<Arc<AppServices>>,
+    Extension(tenant): Extension<forgeerp_api::context::TenantContext>,
+    Path(id): Path<String>,
+) -> axum::response::Response {
+    let tenant_id = tenant.tenant_id();
+    let agg: AggregateId = match id.parse() {
+        Ok(v) => v,
+        Err(_) => return json_error(StatusCode::BAD_REQUEST, "invalid_id", "invalid inventory id"),
+    };
+    let item_id = agg.to_string();
+
+    let all = services.ai_sink.all();
+    let mut item_anomalies: Vec<serde_json::Value> = Vec::new();
+
+    for (t, r) in all {
+        if t != tenant_id {
+            continue;
+        }
+        if r.metadata.get("kind").and_then(|v| v.as_str()) != Some("inventory.anomaly_detection") {
+            continue;
+        }
+        if let Some(arr) = r.metadata.get("anomalies").and_then(|v| v.as_array()) {
+            for a in arr {
+                if a.get("item_id").and_then(|v| v.as_str()) == Some(item_id.as_str()) {
+                    item_anomalies.push(a.clone());
+                }
+            }
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "kind": "insights",
+            "insight_type": "inventory.item",
+            "item_id": item_id,
+            "anomalies": item_anomalies,
+        })),
+    )
+        .into_response()
 }
 
 fn read_model_to_json(rm: InventoryReadModel) -> serde_json::Value {
