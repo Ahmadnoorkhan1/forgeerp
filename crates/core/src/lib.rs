@@ -8,7 +8,7 @@ pub mod error;
 pub mod id;
 pub mod value_object;
 
-pub use aggregate::AggregateRoot;
+pub use aggregate::{Aggregate, AggregateRoot, ExpectedVersion};
 pub use entity::Entity;
 pub use error::{DomainError, DomainResult};
 pub use id::{AggregateId, TenantId, UserId};
