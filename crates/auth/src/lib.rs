@@ -1,15 +1,17 @@
-//! Auth: users, roles, permissions, JWT.
+//! `forgeerp-auth` — pure authentication/authorization boundary (zero-trust).
+//!
+//! This crate is intentionally decoupled from HTTP and storage.
 
-/// User identities and user-related types.
-pub mod users {}
+pub mod authorize;
+pub mod claims;
+pub mod permissions;
+pub mod principal;
+pub mod roles;
 
-/// Role-based access control (RBAC) primitives.
-pub mod roles {}
-
-/// Permission model and authorization checks (policy interfaces).
-pub mod permissions {}
-
-/// JWT token types and encoding/decoding interfaces.
-pub mod jwt {}
+pub use authorize::{authorize, AuthzError, Principal};
+pub use claims::{JwtClaims, TokenValidationError, validate_claims};
+pub use permissions::Permission;
+pub use principal::{PrincipalId, TenantMembership};
+pub use roles::Role;
 
 
