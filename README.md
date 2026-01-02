@@ -128,7 +128,7 @@ ForgeERP's first AI feature is **inventory anomaly detection**: it analyzes stoc
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/forgeerp.git
+git clone https://github.com/Ahmadnoorkhan1/forgeerp.git
 cd forgeerp
 
 # Run the API
