@@ -33,11 +33,33 @@ Types:
   - No IO / no async
   - Enforces the same isolation + concurrency rules as real backends should
 
+### Publish-after-append adapter
+
+Infra also provides an adapter to guarantee the ordering invariant:
+
+- **Publish happens only after append succeeds**
+
+`PublishingEventStore<S, B>` wraps any `EventStore` + an `EventBus` and publishes
+committed events after a successful append. This supports at-least-once delivery
+(consumers must be idempotent).
+
+### Event bus implementations (optional)
+
+The pure event bus abstraction (`EventBus`) lives in **`forgeerp-events`**.
+Infra provides infrastructure-backed implementations:
+
+- `event_bus::redis_pubsub::RedisPubSubEventBus` *(feature: `redis`)*
+  - Publishes `EventEnvelope<serde_json::Value>` via Redis Pub/Sub
+  - Intended for local/dev; not durable (messages may be missed if offline)
+
 ## Module map
 
 ```
 infra/src/
   lib.rs
+  event_bus/
+    mod.rs
+    redis_pubsub.rs   # optional (feature = "redis")
   event_store/
     mod.rs
     trait.rs
