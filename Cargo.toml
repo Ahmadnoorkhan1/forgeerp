@@ -5,6 +5,7 @@ members = [
   "crates/events",
   "crates/auth",
   "crates/api",
+  "crates/inventory",
   "crates/infra",
   "crates/observability",
 ]
