@@ -5,24 +5,75 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use tower::ServiceBuilder;
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::Mutex;
 use axum::routing::post;
 use axum::extract::{Path, Extension};
 use chrono::Utc;
+use tokio::sync::broadcast;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::StreamExt;
 
 use forgeerp_auth::{CommandAuthorization, Permission};
 use forgeerp_core::{AggregateId, TenantId};
 use forgeerp_events::{EventBus, EventEnvelope, InMemoryEventBus};
-use forgeerp_infra::ai::{InMemoryAiInsightSink, InventoryAnomalyRunner, InventoryAnomalyRunnerHandle};
+use forgeerp_ai::AiResult;
+use forgeerp_infra::ai::{AiInsightSink, InventoryAnomalyRunner, InventoryAnomalyRunnerHandle};
 use forgeerp_infra::command_dispatcher::{CommandDispatcher, DispatchError};
 use forgeerp_infra::event_store::InMemoryEventStore;
 use forgeerp_infra::projections::inventory_stock::{InventoryReadModel, InventoryStockProjection};
 use forgeerp_infra::read_model::InMemoryTenantStore;
 use forgeerp_inventory::{AdjustStock, CreateItem, InventoryCommand, InventoryItem, InventoryItemId};
 use serde::Deserialize;
+use serde::Serialize;
+
+#[derive(Debug, Clone, Serialize)]
+struct RealtimeMessage {
+    tenant_id: TenantId,
+    topic: String,
+    payload: serde_json::Value,
+}
+
+/// API-local AI insight sink that stores results and broadcasts "insight available" notifications.
+#[derive(Debug)]
+struct ApiAiInsightSink {
+    inner: Mutex<Vec<(TenantId, AiResult)>>,
+    realtime_tx: broadcast::Sender<RealtimeMessage>,
+}
+
+impl ApiAiInsightSink {
+    fn new(realtime_tx: broadcast::Sender<RealtimeMessage>) -> Self {
+        Self {
+            inner: Mutex::new(Vec::new()),
+            realtime_tx,
+        }
+    }
+
+    fn all(&self) -> Vec<(TenantId, AiResult)> {
+        self.inner.lock().unwrap().clone()
+    }
+}
+
+impl AiInsightSink for ApiAiInsightSink {
+    fn emit(&self, tenant_id: TenantId, result: AiResult) {
+        self.inner.lock().unwrap().push((tenant_id, result.clone()));
+
+        // Broadcast that new insights are available (lossy; no backpressure on core).
+        let _ = self.realtime_tx.send(RealtimeMessage {
+            tenant_id,
+            topic: "ai.insight_available".to_string(),
+            payload: serde_json::json!({
+                "kind": "insights",
+                "insight_type": "ai.result",
+                "metadata": result.metadata,
+            }),
+        });
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -45,11 +96,14 @@ async fn main() {
     let projection: Arc<InventoryStockProjection<_>> =
         Arc::new(InventoryStockProjection::new(rm_store));
 
+    // Realtime channel (SSE): lossy broadcast, tenant-filtered in handlers.
+    let (realtime_tx, _realtime_rx) = broadcast::channel::<RealtimeMessage>(256);
+
     // AI wiring (dev): in-memory insights + per-tenant anomaly runners.
     //
     // - Read-only API endpoints can expose these as "insights".
     // - AI failures are isolated and must not affect core workflows.
-    let ai_sink: Arc<InMemoryAiInsightSink> = Arc::new(InMemoryAiInsightSink::new());
+    let ai_sink: Arc<ApiAiInsightSink> = Arc::new(ApiAiInsightSink::new(realtime_tx.clone()));
     let ai_runners: Arc<Mutex<HashMap<TenantId, InventoryAnomalyRunnerHandle>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let ai_runner_cfg = InventoryAnomalyRunner::default();
@@ -60,6 +114,7 @@ async fn main() {
         let projection = projection.clone();
         let ai_sink = ai_sink.clone();
         let ai_runners = ai_runners.clone();
+        let realtime_tx = realtime_tx.clone();
         tokio::task::spawn_blocking(move || loop {
             match sub.recv() {
                 Ok(env) => {
@@ -67,6 +122,18 @@ async fn main() {
                         tracing::warn!("projection apply failed: {e}");
                         continue;
                     }
+
+                    // Broadcast projection update (lossy; no backpressure on core).
+                    let _ = realtime_tx.send(RealtimeMessage {
+                        tenant_id: env.tenant_id(),
+                        topic: "inventory.projection_updated".to_string(),
+                        payload: serde_json::json!({
+                            "kind": "projection_update",
+                            "aggregate_type": env.aggregate_type(),
+                            "aggregate_id": env.aggregate_id().to_string(),
+                            "sequence_number": env.sequence_number(),
+                        }),
+                    });
 
                     // Event-triggered AI execution (after successful projection update).
                     // Backpressure: triggers are coalesced. Failures are logged inside the runner.
@@ -88,11 +155,12 @@ async fn main() {
     }
 
     let dispatcher: Arc<CommandDispatcher<_, _>> = Arc::new(CommandDispatcher::new(store, bus));
-    let services = Arc::new(AppServices { dispatcher, projection, ai_sink });
+    let services = Arc::new(AppServices { dispatcher, projection, ai_sink, realtime_tx });
 
     // Protected routes: require auth + tenant context.
     let protected = Router::new()
         .route("/whoami", get(whoami))
+        .route("/stream", get(stream))
         .nest("/inventory", inventory_router())
         .layer(Extension(services))
         .layer(axum::middleware::from_fn_with_state(
@@ -129,11 +197,30 @@ async fn whoami(
     }))
 }
 
+async fn stream(
+    Extension(services): Extension<Arc<AppServices>>,
+    Extension(tenant): Extension<forgeerp_api::context::TenantContext>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<SseEvent, Infallible>>> {
+    let tenant_id = tenant.tenant_id();
+    let rx = services.realtime_tx.subscribe();
+
+    let stream = BroadcastStream::new(rx).filter_map(move |msg| match msg {
+        Ok(m) if m.tenant_id == tenant_id => {
+            let data = serde_json::to_string(&m.payload).unwrap_or_else(|_| "{}".to_string());
+            Some(Ok(SseEvent::default().event(m.topic).data(data)))
+        }
+        _ => None,
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15)))
+}
+
 #[derive(Clone)]
 struct AppServices {
     dispatcher: Arc<CommandDispatcher<Arc<InMemoryEventStore>, Arc<InMemoryEventBus<EventEnvelope<serde_json::Value>>>>>,
     projection: Arc<InventoryStockProjection<Arc<InMemoryTenantStore<InventoryItemId, InventoryReadModel>>>>,
-    ai_sink: Arc<InMemoryAiInsightSink>,
+    ai_sink: Arc<ApiAiInsightSink>,
+    realtime_tx: broadcast::Sender<RealtimeMessage>,
 }
 
 fn inventory_router() -> Router {

@@ -24,6 +24,11 @@
 - `GET /inventory/anomalies` → list detected inventory anomalies for the current tenant (requires auth)
 - `GET /inventory/{id}/insights` → fetch AI insights for a specific inventory item (requires auth)
 
+### Real-time (SSE)
+- `GET /stream` → Server-Sent Events stream for real-time updates (requires auth)
+  - Tenant-scoped: a client only receives events for its authenticated tenant
+  - Lossy / no backpressure: slow clients may miss events; core workflows are never blocked
+
 ## Authentication + tenant context propagation
 
 This crate implements an Axum middleware that:
@@ -74,6 +79,20 @@ Common status codes:
 - These endpoints are **read-only** and never execute commands.
 - Responses are explicitly labeled as **`kind: "insights"`**.
 - In the current dev wiring, insights are generated in-process from projections and stored in-memory.
+
+## Real-time stream notes (SSE)
+
+The SSE endpoint streams messages **derived from projections and AI insight availability** (not commands).
+
+Event types currently emitted:
+- `inventory.projection_updated`
+  - Emitted after a successful projection apply
+- `ai.insight_available`
+  - Emitted when new AI insights are stored/available
+
+Each event is sent with:
+- SSE `event`: the topic name above
+- SSE `data`: a JSON payload describing the update
 
 ### Required config
 

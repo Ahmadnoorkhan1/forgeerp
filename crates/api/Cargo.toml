@@ -26,9 +26,11 @@ forgeerp-core = { path = "../core" }
 forgeerp-infra = { path = "../infra" }
 forgeerp-inventory = { path = "../inventory" }
 forgeerp-events = { path = "../events" }
+forgeerp-ai = { path = "../ai" }
 
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 
