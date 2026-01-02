@@ -5,6 +5,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use forgeerp_core::{AggregateId, ExpectedVersion, TenantId};
+use std::sync::Arc;
 
 /// An event ready to be appended to a stream (not yet assigned a sequence number).
 ///
@@ -102,6 +103,27 @@ pub trait EventStore: Send + Sync {
         tenant_id: TenantId,
         aggregate_id: AggregateId,
     ) -> Result<Vec<StoredEvent>, EventStoreError>;
+}
+
+impl<S> EventStore for Arc<S>
+where
+    S: EventStore + ?Sized,
+{
+    fn append(
+        &self,
+        events: Vec<UncommittedEvent>,
+        expected_version: ExpectedVersion,
+    ) -> Result<Vec<StoredEvent>, EventStoreError> {
+        (**self).append(events, expected_version)
+    }
+
+    fn load_stream(
+        &self,
+        tenant_id: TenantId,
+        aggregate_id: AggregateId,
+    ) -> Result<Vec<StoredEvent>, EventStoreError> {
+        (**self).load_stream(tenant_id, aggregate_id)
+    }
 }
 
 impl UncommittedEvent {
