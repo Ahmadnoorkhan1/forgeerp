@@ -217,14 +217,10 @@ dependencies = [
 name = "forgeerp-auth"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "chrono",
  "forgeerp-core",
  "serde",
- "serde_json",
  "thiserror",
- "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 
