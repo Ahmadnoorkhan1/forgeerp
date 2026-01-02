@@ -40,6 +40,7 @@
 - **Append-only**: envelopes carry a monotonically increasing `sequence_number`.
   - Publishing is expected to happen **after** successful append (enforced by infra adapters).
   - Delivery is **at-least-once** (consumers must be idempotent).
+  - Projections are expected to be **rebuildable** by replaying envelopes.
 
 ## Module map
 

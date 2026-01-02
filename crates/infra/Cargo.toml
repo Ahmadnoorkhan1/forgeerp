@@ -13,6 +13,7 @@ redis = ["dep:redis"]
 [dependencies]
 forgeerp-core = { path = "../core" }
 forgeerp-events = { path = "../events" }
+forgeerp-inventory = { path = "../inventory" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

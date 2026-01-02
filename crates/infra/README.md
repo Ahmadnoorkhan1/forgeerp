@@ -52,6 +52,26 @@ Infra provides infrastructure-backed implementations:
   - Publishes `EventEnvelope<serde_json::Value>` via Redis Pub/Sub
   - Intended for local/dev; not durable (messages may be missed if offline)
 
+### Read model storage (tenant-isolated, disposable)
+
+Infra provides a tenant-isolated storage abstraction for **disposable read models**:
+
+- `TenantStore<K, V>`: key/value store scoped by `TenantId`
+- `InMemoryTenantStore<K, V>`: in-memory implementation for tests/dev
+
+This supports **rebuild-from-scratch** projections by clearing a tenant’s read model and replaying events.
+
+### Inventory stock projection (read model)
+
+Infra includes a first concrete projection for the Inventory module:
+
+- `projections::inventory_stock::InventoryStockProjection`
+  - Consumes published `EventEnvelope<serde_json::Value>` messages
+  - Deserializes payload into `forgeerp_inventory::InventoryEvent`
+  - Maintains a queryable `InventoryReadModel` (current stock per item)
+  - Enforces tenant isolation + monotonic sequence per (tenant, aggregate) stream
+  - Rebuildable from scratch by replaying envelopes
+
 ## Module map
 
 ```
@@ -60,6 +80,12 @@ infra/src/
   event_bus/
     mod.rs
     redis_pubsub.rs   # optional (feature = "redis")
+  read_model/
+    mod.rs
+    tenant_store.rs   # TenantStore + InMemoryTenantStore
+  projections/
+    mod.rs
+    inventory_stock.rs
   event_store/
     mod.rs
     trait.rs

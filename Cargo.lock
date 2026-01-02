@@ -269,6 +269,7 @@ dependencies = [
  "chrono",
  "forgeerp-core",
  "forgeerp-events",
+ "forgeerp-inventory",
  "redis",
  "serde",
  "serde_json",
