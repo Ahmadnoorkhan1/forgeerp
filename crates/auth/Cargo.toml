@@ -12,5 +12,6 @@ serde = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
+jsonwebtoken = "9"
 
 
