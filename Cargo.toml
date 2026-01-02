@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/core",
+  "crates/events",
+  "crates/auth",
+  "crates/api",
+  "crates/infra",
+  "crates/observability",
+]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v7"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
