@@ -20,6 +20,10 @@
 - `POST /inventory/items/{id}/adjust` → adjust stock (requires auth)
 - `GET /inventory/items/{id}` → fetch current stock read model (requires auth)
 
+### AI insights (read-only)
+- `GET /inventory/anomalies` → list detected inventory anomalies for the current tenant (requires auth)
+- `GET /inventory/{id}/insights` → fetch AI insights for a specific inventory item (requires auth)
+
 ## Authentication + tenant context propagation
 
 This crate implements an Axum middleware that:
@@ -64,6 +68,12 @@ Common status codes:
 - `403` forbidden / tenant isolation
 - `409` optimistic concurrency conflict
 - `422` invariant violations (e.g. stock would go negative)
+
+## AI insights notes
+
+- These endpoints are **read-only** and never execute commands.
+- Responses are explicitly labeled as **`kind: "insights"`**.
+- In the current dev wiring, insights are generated in-process from projections and stored in-memory.
 
 ### Required config
 
