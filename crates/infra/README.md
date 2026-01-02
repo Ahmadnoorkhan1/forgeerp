@@ -10,6 +10,16 @@
 
 ## What’s implemented (today)
 
+### Command execution pipeline (application orchestration)
+
+Infra includes a reusable command execution engine that wires together event sourcing primitives
+without pulling HTTP or auth concerns into the domain:
+
+- `command_dispatcher::CommandDispatcher`
+  - Flow: **Command → Load events → Rehydrate aggregate → Decide → Persist → Publish**
+  - Enforces **tenant isolation** by validating loaded streams (tenant_id + aggregate_id + monotonic sequence)
+  - Surfaces deterministic domain failures (validation/invariant) and optimistic concurrency conflicts
+
 ### Event store abstraction (append-only)
 
 `infra` provides a storage-agnostic **append-only event store** boundary:
@@ -81,6 +91,17 @@ direct access to the raw event store).
 - Example (today): Inventory stock projection produces `forgeerp_ai::InventorySnapshot`
   (including a derived `historical_trend`, currently minimal).
 
+### AI job orchestration (schedule + event-trigger)
+
+Infra provides optional orchestration helpers to run AI jobs without affecting core workflows:
+
+- `ai::inventory_anomaly_runner::InventoryAnomalyRunner`
+  - **Interval** execution (cron-like cadence)
+  - **Event-trigger hook** (`InventoryAnomalyRunnerHandle::trigger()`) intended to be called after a successful projection update
+  - **Backpressure** via trigger coalescing (bounded queue)
+  - **Retry safety** with bounded exponential backoff (failures are logged; never propagated to the command/projection pipeline)
+  - Emits insights to an `AiInsightSink` (AI outputs are not domain events)
+
 ### Background workers (projection runners)
 
 Infra provides reusable worker loops to run projection handlers asynchronously:
@@ -96,6 +117,7 @@ Infra provides reusable worker loops to run projection handlers asynchronously:
 ```
 infra/src/
   lib.rs
+  command_dispatcher.rs
   event_bus/
     mod.rs
     redis_pubsub.rs   # optional (feature = "redis")
@@ -109,6 +131,9 @@ infra/src/
     mod.rs
     trait.rs
     in_memory.rs
+  ai/
+    mod.rs
+    inventory_anomaly_runner.rs
   workers/
     mod.rs
     projection_worker.rs
