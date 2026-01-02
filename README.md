@@ -57,6 +57,7 @@ In the current repo state, these responsibilities live in:
 - **Mechanics (`crates/events`)**
   - `Event` + `EventEnvelope` (tenant-scoped metadata + payload)
   - `EventBus` + `InMemoryEventBus`
+  - Projections: `Projection` + `ProjectionRunner` (cursor/version tracking + rebuild from scratch)
 - **Infrastructure (`crates/infra`)**
   - `EventStore` trait + `InMemoryEventStore`
   - `PublishingEventStore` adapter (publish only after successful append)
@@ -129,6 +130,8 @@ Environment variables (see `.env.example`):
 - **In-memory event bus**: `forgeerp_events::InMemoryEventBus`
 - **Command dispatcher**: `forgeerp_infra::command_dispatcher::CommandDispatcher`
   - Handles concurrency conflicts + deterministic domain validation errors
+- **Projection runner**: `forgeerp_events::ProjectionRunner`
+  - Replay events to build disposable read models, with cursor/version tracking
 
 ## Optional features
 
