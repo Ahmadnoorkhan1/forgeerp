@@ -25,6 +25,8 @@ ForgeERP is a Cargo workspace with focused crates under `crates/`:
   - Read more: `crates/auth/README.md`
 - **`crates/infra`**: infrastructure adapters (event store, event bus, future DB/Redis/etc)  
   - Read more: `crates/infra/README.md`
+- **`crates/inventory`**: first ERP module — **Inventory** domain (pure event-sourced aggregate)  
+  - Read more: `crates/inventory/README.md`
 - **`crates/observability`**: shared tracing/logging setup  
   - Read more: `crates/observability/README.md`
 - **`crates/api`**: Axum HTTP server + routing + request/response mapping  
@@ -57,11 +59,13 @@ In the current repo state, these responsibilities live in:
 - **Mechanics (`crates/events`)**
   - `Event` + `EventEnvelope` (tenant-scoped metadata + payload)
   - `EventBus` + `InMemoryEventBus`
+  - `Subscription` helpers for consumers (including timeout-based polling for shutdown-aware loops)
   - Projections: `Projection` + `ProjectionRunner` (cursor/version tracking + rebuild from scratch)
 - **Infrastructure (`crates/infra`)**
   - `EventStore` trait + `InMemoryEventStore`
   - `PublishingEventStore` adapter (publish only after successful append)
   - `CommandDispatcher` (orchestrates the full pipeline without HTTP/auth)
+  - Background workers (projection runners) with graceful shutdown + optional tenant filtering
 
 ## Quickstart (local, without Docker)
 
@@ -134,6 +138,31 @@ Environment variables (see `.env.example`):
 - **Projection runner**: `forgeerp_events::ProjectionRunner`
   - Replay events to build disposable read models, with cursor/version tracking
   - Supports tenant-pinned runners via `ProjectionRunner::new_for_tenant(...)`
+- **Projection workers (runtime loop)**: `forgeerp_infra::workers::ProjectionWorker`
+  - Subscribes to an event bus and runs idempotent handlers (at-least-once safe)
+  - Graceful shutdown via `WorkerHandle`
+  - Optional tenant filtering for tenant-safe initialization
+
+## Inventory (first real ERP module)
+
+ForgeERP now includes the first real domain module: **Inventory**.
+
+- Domain module: `crates/inventory`
+  - `InventoryItem` aggregate
+  - Commands: `CreateItem`, `AdjustStock`
+  - Events: `ItemCreated`, `StockAdjusted`
+  - Invariants: stock cannot go negative; identity is tenant-scoped
+
+Infra + API include an end-to-end slice:
+- Read model projection: `forgeerp_infra::projections::inventory_stock::InventoryStockProjection`
+- API endpoints (authenticated):
+  - `POST /inventory/items`
+  - `POST /inventory/items/{id}/adjust`
+  - `GET /inventory/items/{id}`
+
+Notes:
+- The API **only orchestrates** (HTTP mapping + auth + dispatch). Business rules live in the aggregate.
+- Requests require a valid **Bearer JWT**. See `crates/api/README.md` for details.
 
 ## Optional features
 
