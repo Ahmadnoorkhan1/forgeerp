@@ -77,6 +77,11 @@ where
     /// - Enforces monotonic sequence per (tenant, aggregate) stream
     /// - Idempotent for at-least-once delivery (replays <= cursor are ignored)
     pub fn apply_envelope(&self, envelope: &EventEnvelope<JsonValue>) -> Result<(), InventoryProjectionError> {
+        // Ignore non-inventory aggregates (allows sharing a bus across modules).
+        if envelope.aggregate_type() != "inventory.item" {
+            return Ok(());
+        }
+
         let tenant_id = envelope.tenant_id();
         let aggregate_id = envelope.aggregate_id();
         let seq = envelope.sequence_number();

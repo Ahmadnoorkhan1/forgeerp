@@ -3,6 +3,7 @@
 //! At-least-once delivery is acceptable; consumers must be idempotent.
 
 use std::sync::mpsc::Receiver;
+use std::sync::Arc;
 
 /// A subscription to an event stream.
 #[derive(Debug)]
@@ -36,6 +37,21 @@ pub trait EventBus<M>: Send + Sync {
     fn publish(&self, message: M) -> Result<(), Self::Error>;
 
     fn subscribe(&self) -> Subscription<M>;
+}
+
+impl<M, B> EventBus<M> for Arc<B>
+where
+    B: EventBus<M> + ?Sized,
+{
+    type Error = B::Error;
+
+    fn publish(&self, message: M) -> Result<(), Self::Error> {
+        (**self).publish(message)
+    }
+
+    fn subscribe(&self) -> Subscription<M> {
+        (**self).subscribe()
+    }
 }
 
 

@@ -3,6 +3,7 @@ use std::hash::Hash;
 use std::sync::RwLock;
 
 use forgeerp_core::TenantId;
+use std::sync::Arc;
 
 /// Tenant-isolated key/value store abstraction for disposable read models.
 pub trait TenantStore<K, V>: Send + Sync {
@@ -11,6 +12,27 @@ pub trait TenantStore<K, V>: Send + Sync {
     fn list(&self, tenant_id: TenantId) -> Vec<V>;
     /// Clear all read-model records for a tenant (rebuild support).
     fn clear_tenant(&self, tenant_id: TenantId);
+}
+
+impl<K, V, S> TenantStore<K, V> for Arc<S>
+where
+    S: TenantStore<K, V> + ?Sized,
+{
+    fn get(&self, tenant_id: TenantId, key: &K) -> Option<V> {
+        (**self).get(tenant_id, key)
+    }
+
+    fn upsert(&self, tenant_id: TenantId, key: K, value: V) {
+        (**self).upsert(tenant_id, key, value)
+    }
+
+    fn list(&self, tenant_id: TenantId) -> Vec<V> {
+        (**self).list(tenant_id)
+    }
+
+    fn clear_tenant(&self, tenant_id: TenantId) {
+        (**self).clear_tenant(tenant_id)
+    }
 }
 
 /// In-memory tenant-isolated store for tests/dev.
