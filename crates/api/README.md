@@ -15,6 +15,11 @@
 ### Authenticated endpoints (example)
 - `GET /whoami` → returns the authenticated principal + tenant context (requires auth)
 
+### Inventory (first end-to-end ERP feature)
+- `POST /inventory/items` → create an inventory item (requires auth)
+- `POST /inventory/items/{id}/adjust` → adjust stock (requires auth)
+- `GET /inventory/items/{id}` → fetch current stock read model (requires auth)
+
 ## Authentication + tenant context propagation
 
 This crate implements an Axum middleware that:
@@ -34,6 +39,31 @@ This crate provides an API-side helper:
 
 It checks `forgeerp_auth::CommandAuthorization::required_permissions()` **before** dispatching.
 This keeps aggregates and infra **auth-agnostic**.
+
+## Inventory request flow
+
+For inventory commands, the API follows this flow (no business rules in HTTP handlers):
+
+**HTTP → Auth → TenantContext → CommandDispatcher → EventStore → Publish → Projection**
+
+In the current implementation this uses in-memory components for local development:
+- `forgeerp_infra::event_store::InMemoryEventStore`
+- `forgeerp_events::InMemoryEventBus`
+- `forgeerp_infra::projections::inventory_stock::InventoryStockProjection`
+
+## Structured errors
+
+Inventory endpoints return JSON errors in the form:
+
+```json
+{ "error": "<code>", "message": "<human-readable>" }
+```
+
+Common status codes:
+- `401` unauthenticated / malformed token
+- `403` forbidden / tenant isolation
+- `409` optimistic concurrency conflict
+- `422` invariant violations (e.g. stock would go negative)
 
 ### Required config
 
