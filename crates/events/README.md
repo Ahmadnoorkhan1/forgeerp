@@ -21,6 +21,9 @@
   - `Command` (targets an aggregate via `target_aggregate_id`)
   - `CommandHandler` (handles commands and emits events; no storage assumptions)
   - `Projection` (consumes envelopes to build read models)
+- **Aggregate execution helper**
+  - `handler::execute(&mut aggregate, &command)` runs **handle → apply** deterministically
+  - No async, no IO, no side effects
 
 ## Event model guarantees
 
