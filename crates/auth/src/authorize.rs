@@ -26,6 +26,14 @@ pub enum AuthzError {
     Forbidden(String),
 }
 
+/// Command-side authorization contract (checked at the command boundary).
+///
+/// Implement this on commands that require permissions.
+/// The API layer should enforce these requirements before dispatching.
+pub trait CommandAuthorization {
+    fn required_permissions(&self) -> &[Permission];
+}
+
 /// Authorize a principal within its active tenant context.
 ///
 /// - No IO
@@ -43,7 +51,7 @@ pub fn authorize(principal: &Principal, required: &Permission) -> Result<(), Aut
         .map(|p| p.as_str())
         .collect();
 
-    if perms.contains(required.as_str()) {
+    if perms.contains("*") || perms.contains(required.as_str()) {
         Ok(())
     } else {
         Err(AuthzError::Forbidden(required.as_str().to_string()))

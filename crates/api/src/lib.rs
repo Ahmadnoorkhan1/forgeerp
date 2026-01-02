@@ -2,6 +2,7 @@
 
 pub mod context;
 pub mod middleware;
+pub mod authz;
 
 /// HTTP server bootstrap and runtime wiring (no framework specifics yet).
 pub mod server {}

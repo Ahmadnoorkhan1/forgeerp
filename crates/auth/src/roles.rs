@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 
 /// Role identifier used for RBAC.
@@ -6,10 +8,10 @@ use serde::{Deserialize, Serialize};
 /// permissions can be done by the caller/policy layer (often infra-backed).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct Role(String);
+pub struct Role(Cow<'static, str>);
 
 impl Role {
-    pub fn new(name: impl Into<String>) -> Self {
+    pub fn new(name: impl Into<Cow<'static, str>>) -> Self {
         Self(name.into())
     }
 

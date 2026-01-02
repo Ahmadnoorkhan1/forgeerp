@@ -29,6 +29,20 @@
 ### RBAC enforcement
 - `authorize(&Principal, &Permission)` returns explicit `AuthzError` (no panics)
 
+### Command-boundary authorization (centralized)
+
+To ensure commands cannot execute without the right permissions, this crate provides:
+
+- `CommandAuthorization` trait
+  - `required_permissions() -> &[Permission]`
+
+The API layer should enforce required permissions **before** dispatching commands.
+
+#### Wildcard permissions
+
+`Permission("*")` is treated as **allow-all** for the current tenant context. This is useful for
+admin/service roles without enumerating every permission in tokens.
+
 ## Module map
 
 ```
