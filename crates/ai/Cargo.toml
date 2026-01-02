@@ -1,0 +1,13 @@
+[package]
+name = "forgeerp-ai"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+forgeerp-core = { path = "../core" }
+
+

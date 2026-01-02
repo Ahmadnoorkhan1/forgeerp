@@ -211,6 +211,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "645cbb3a84e60b7531617d5ae4e57f7e27308f6445f5abf653209ea76dec8dff"
 
 [[package]]
+name = "forgeerp-ai"
+version = "0.1.0"
+dependencies = [
+ "forgeerp-core",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "forgeerp-api"
 version = "0.1.0"
 dependencies = [
