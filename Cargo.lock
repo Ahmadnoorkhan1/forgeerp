@@ -279,6 +279,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "forgeerp-inventory"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "forgeerp-core",
+ "forgeerp-events",
+ "serde",
+]
+
+[[package]]
 name = "forgeerp-observability"
 version = "0.1.0"
 dependencies = [

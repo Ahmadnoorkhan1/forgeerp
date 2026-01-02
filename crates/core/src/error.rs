@@ -52,6 +52,10 @@ impl DomainError {
     pub fn conflict(msg: impl Into<String>) -> Self {
         Self::Conflict(msg.into())
     }
+
+    pub fn not_found() -> Self {
+        Self::NotFound
+    }
 }
 
 
