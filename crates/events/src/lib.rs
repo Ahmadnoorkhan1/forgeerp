@@ -12,6 +12,7 @@ pub mod handler;
 pub mod in_memory_bus;
 pub mod projection;
 pub mod runner;
+pub mod tenant;
 
 pub use bus::{EventBus, Subscription};
 pub use command::Command;
@@ -21,5 +22,6 @@ pub use handler::CommandHandler;
 pub use in_memory_bus::InMemoryEventBus;
 pub use projection::Projection;
 pub use runner::{ProjectionCursor, ProjectionError, ProjectionRunner};
+pub use tenant::TenantScoped;
 
 
