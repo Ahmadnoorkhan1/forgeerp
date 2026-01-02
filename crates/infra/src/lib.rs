@@ -6,6 +6,7 @@ pub mod command_dispatcher;
 pub mod read_model;
 pub mod projections;
 pub mod workers;
+pub mod ai;
 
 /// Database adapters (connection pools, repositories, migrations wiring).
 pub mod db {}
