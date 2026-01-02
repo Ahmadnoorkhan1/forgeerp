@@ -5,6 +5,7 @@ use serde_json::Value as JsonValue;
 use thiserror::Error;
 
 use forgeerp_core::{AggregateId, TenantId};
+use forgeerp_ai::{AiError, InventoryItemSnapshot, InventorySnapshot, ReadModelReader};
 use forgeerp_events::EventEnvelope;
 use forgeerp_inventory::{InventoryEvent, InventoryItemId};
 
@@ -195,6 +196,26 @@ where
         }
 
         Ok(())
+    }
+}
+
+impl<S> ReadModelReader<InventorySnapshot> for InventoryStockProjection<S>
+where
+    S: TenantStore<InventoryItemId, InventoryReadModel> + Send + Sync + 'static,
+{
+    fn get_snapshot(&self, tenant_id: TenantId) -> Result<InventorySnapshot, AiError> {
+        let items = self
+            .list(tenant_id)
+            .into_iter()
+            .map(|rm| InventoryItemSnapshot {
+                item_id: rm.item_id.to_string(),
+                quantity: rm.quantity,
+                // Derived trend (minimal): latest quantity only.
+                historical_trend: vec![rm.quantity],
+            })
+            .collect::<Vec<_>>();
+
+        Ok(InventorySnapshot { tenant_id, items })
     }
 }
 

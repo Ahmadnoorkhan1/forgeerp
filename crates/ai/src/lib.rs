@@ -8,11 +8,15 @@
 //! - It emits **AI insights/results**, not domain events.
 
 pub mod job;
+pub mod inventory_anomaly;
 pub mod result;
 pub mod scheduler;
 
 pub use job::AiJob;
+pub use inventory_anomaly::{AnomalyDetected, InventoryAnomalyJob};
 pub use result::{AiError, AiResult};
-pub use scheduler::{AiScheduler, LocalAiScheduler, TenantScope};
+pub use scheduler::{
+    AiScheduler, InventoryItemSnapshot, InventorySnapshot, LocalAiScheduler, ReadModelReader, TenantScope,
+};
 
 

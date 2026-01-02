@@ -72,6 +72,25 @@ Infra includes a first concrete projection for the Inventory module:
   - Enforces tenant isolation + monotonic sequence per (tenant, aggregate) stream
   - Rebuildable from scratch by replaying envelopes
 
+### AI snapshot adapters (read model → AI input)
+
+Infra can expose tenant-isolated read models as **AI-safe snapshots** (without granting
+direct access to the raw event store).
+
+- Implements `forgeerp_ai::ReadModelReader<S>` for selected projections.
+- Example (today): Inventory stock projection produces `forgeerp_ai::InventorySnapshot`
+  (including a derived `historical_trend`, currently minimal).
+
+### Background workers (projection runners)
+
+Infra provides reusable worker loops to run projection handlers asynchronously:
+
+- `workers::ProjectionWorker` + `workers::WorkerHandle`
+  - Subscribes to an `EventBus`
+  - Runs idempotent handlers (at-least-once delivery safe)
+  - Graceful shutdown support
+  - Optional tenant filtering for tenant-safe initialization
+
 ## Module map
 
 ```
@@ -90,6 +109,9 @@ infra/src/
     mod.rs
     trait.rs
     in_memory.rs
+  workers/
+    mod.rs
+    projection_worker.rs
 ```
 
 
