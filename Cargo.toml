@@ -21,3 +21,5 @@ thiserror = "1"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
+proptest = "1"
+criterion = { version = "0.5", features = ["html_reports"] }

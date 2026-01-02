@@ -12,4 +12,7 @@ forgeerp-events = { path = "../events" }
 serde = { workspace = true }
 chrono = { workspace = true }
 
+[dev-dependencies]
+proptest = { workspace = true }
+
 

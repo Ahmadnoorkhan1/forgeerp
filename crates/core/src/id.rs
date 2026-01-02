@@ -11,12 +11,47 @@ use crate::error::DomainError;
 #[serde(transparent)]
 pub struct TenantId(Uuid);
 
-/// Identifier of a user (actor identity).
+/// Identifier of a user (actor/principal identity).
+///
+/// `UserId` represents the identity of a **principal** (user, service account, etc.) who
+/// performs actions in the system. This is used for:
+///
+/// - **Authorization**: Who performed an action (audit trails, permissions)
+/// - **Audit logging**: Track which user made changes
+/// - **Multi-user scenarios**: Support multiple users per tenant
+///
+/// Note: In authentication/authorization contexts, this is often called `PrincipalId` to
+/// emphasize it can represent any authenticated principal (not just human users).
+///
+/// ## UUIDv7
+///
+/// Uses UUIDv7 (time-ordered) for better database index performance and time-based ordering.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct UserId(Uuid);
 
 /// Identifier of an aggregate root.
+///
+/// `AggregateId` uniquely identifies an aggregate root instance. Each aggregate root has
+/// a unique ID that persists across all state changes (events).
+///
+/// ## Aggregate Identity
+///
+/// In event sourcing, aggregates maintain their identity across all events. The `AggregateId`
+/// is used to:
+/// - **Load aggregates**: Query events for a specific aggregate
+/// - **Route commands**: Direct commands to the correct aggregate instance
+/// - **Event streams**: Group events by aggregate (each aggregate has its own event stream)
+///
+/// ## Event Streams
+///
+/// In the event store, events are organized into streams, where each stream corresponds to
+/// one aggregate instance. The stream key is `(tenant_id, aggregate_id)`, ensuring both
+/// tenant isolation and aggregate scoping.
+///
+/// ## UUIDv7
+///
+/// Uses UUIDv7 (time-ordered) for better database index performance and time-based ordering.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AggregateId(Uuid);

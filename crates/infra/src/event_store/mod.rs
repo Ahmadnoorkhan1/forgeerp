@@ -11,7 +11,46 @@ pub use r#trait::{EventStore, EventStoreError, StoredEvent, UncommittedEvent};
 
 /// Adapter that publishes committed events to an `EventBus` after a successful append.
 ///
-/// This ensures the ordering invariant: **publish happens only after append succeeds**.
+/// `PublishingEventStore` is a composable adapter that wraps an `EventStore` and automatically
+/// publishes committed events to an `EventBus`. This ensures the critical ordering invariant:
+/// **publish happens only after append succeeds**.
+///
+/// ## Ordering Guarantee
+///
+/// Events are published **after** they're successfully persisted to the event store. This ensures:
+/// - **Durability**: Events are persisted before distribution (never lose events)
+/// - **Consistency**: Consumers only receive events that were successfully stored
+/// - **Recovery**: If publication fails, events are still in the store and can be republished
+///
+/// ## Usage Pattern
+///
+/// This adapter is useful when you want to combine event storage and publication in one step:
+///
+/// ```ignore
+/// let store = InMemoryEventStore::new();
+/// let bus = InMemoryEventBus::new();
+/// let publishing_store = PublishingEventStore::new(store, bus);
+///
+/// // append() both stores and publishes events
+/// let committed = publishing_store.append(events, expected_version)?;
+/// ```
+///
+/// ## Error Handling
+///
+/// If publication fails after a successful append, `append()` returns `EventStoreError::Publish`.
+/// The events are already persisted, so:
+/// - Retrying `append()` is idempotent (events already stored, will fail on version check)
+/// - Caller can retry just the publication step (events are in store)
+/// - This gives at-least-once delivery semantics
+///
+/// ## When to Use
+///
+/// - **Simple workflows**: When you want store + publish in one operation
+/// - **Testing**: Simpler than managing store and bus separately
+/// - **Synchronous patterns**: When you want immediate publication after append
+///
+/// For more control (e.g., separate error handling for store vs bus), use `EventStore` and
+/// `EventBus` separately (as `CommandDispatcher` does).
 pub struct PublishingEventStore<S, B> {
     store: S,
     bus: B,

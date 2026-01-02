@@ -1,7 +1,49 @@
 //! Command execution pipeline (application-level orchestration).
 //!
-//! Flow:
-//! Command → Load events → Rehydrate aggregate → Decide → Persist → Publish
+//! This module implements the **command dispatch pattern** for event-sourced aggregates.
+//! It orchestrates the full lifecycle: loading history, rehydrating state, handling commands,
+//! persisting events, and publishing to the event bus.
+//!
+//! ## Command Execution Flow
+//!
+//! The `CommandDispatcher` implements this pipeline:
+//!
+//! ```text
+//! Command
+//!   ↓
+//! 1. Load events from store (tenant-scoped)
+//!   ↓
+//! 2. Rehydrate aggregate (apply historical events to rebuild state)
+//!   ↓
+//! 3. Handle command (pure decision logic, produces events)
+//!   ↓
+//! 4. Persist events to store (append-only, optimistic concurrency check)
+//!   ↓
+//! 5. Publish events to bus (for projections, handlers, etc.)
+//! ```
+//!
+//! ## Why This Orchestration?
+//!
+//! This module exists to:
+//!
+//! - **Encapsulate complexity**: The command execution pattern is consistent across all aggregates,
+//!   so we centralize it here rather than duplicating in every handler
+//!
+//! - **Enforce invariants**: Tenant isolation, optimistic concurrency, and event ordering are
+//!   enforced here, preventing bugs in domain code
+//!
+//! - **Compose infrastructure**: The dispatcher composes `EventStore` and `EventBus` traits,
+//!   making it testable with in-memory implementations and swappable with real backends
+//!
+//! - **Error handling**: Centralizes error mapping from domain errors, store errors, and bus
+//!   errors into a consistent `DispatchError` enum
+//!
+//! ## Design Principles
+//!
+//! - **No IO assumptions**: Uses trait objects, works with any `EventStore` and `EventBus`
+//! - **Deterministic**: No side effects except through the injected store/bus
+//! - **Tenant-aware**: All operations are scoped to a tenant ID
+//! - **Failure handling**: Maps domain errors, store errors, and bus errors consistently
 //!
 //! This module contains no IO itself; it composes infrastructure traits.
 
@@ -60,12 +102,53 @@ impl From<DomainError> for DispatchError {
     }
 }
 
-/// Reusable command execution engine.
+/// Reusable command execution engine for event-sourced aggregates.
 ///
-/// Notes:
-/// - Aggregates must be deterministic and side-effect free.
-/// - Events are appended first; publication happens only after successful append.
-/// - Publication failures are surfaced as errors and may be retried (at-least-once).
+/// `CommandDispatcher` orchestrates the full event-sourcing pipeline: loading events,
+/// rehydrating aggregates, handling commands, persisting events, and publishing to the bus.
+///
+/// ## Architecture Role
+///
+/// The dispatcher sits between the API layer (HTTP handlers) and the infrastructure layer
+/// (event store, event bus). It provides a **consistent execution model** for all commands
+/// while keeping domain code pure and testable.
+///
+/// ## Execution Guarantees
+///
+/// - **Atomicity**: Events are persisted before publication (if append fails, nothing is published)
+/// - **Consistency**: Tenant isolation and optimistic concurrency are enforced
+/// - **Isolation**: Each command operates on a single aggregate instance
+/// - **Durability**: Events are persisted before returning (store's responsibility)
+///
+/// ## Error Semantics
+///
+/// - **Domain errors**: Validation failures, invariant violations → `DispatchError::Validation` / `InvariantViolation`
+/// - **Concurrency errors**: Version mismatch → `DispatchError::Concurrency`
+/// - **Tenant errors**: Cross-tenant access → `DispatchError::TenantIsolation`
+/// - **Bus errors**: Publication failures → `DispatchError::Publish` (events are persisted, but publication failed)
+///
+/// ## At-Least-Once Delivery
+///
+/// If event publication fails after a successful append, the error is returned to the caller.
+/// The events are already persisted, so retrying the command is idempotent (or the caller
+/// can retry just the publication step). This gives **at-least-once** delivery semantics.
+///
+/// ## Generic Parameters
+///
+/// - `S`: Event store implementation (must implement `EventStore` trait)
+/// - `B`: Event bus implementation (must implement `EventBus` trait)
+///
+/// This design enables:
+/// - **Testability**: Use `InMemoryEventStore` and `InMemoryEventBus` in tests
+/// - **Swappability**: Replace with Postgres event store, Redis bus, etc. without changing domain code
+/// - **Composability**: Mix and match different store/bus implementations
+///
+/// ## Aggregate Requirements
+///
+/// Aggregates used with `CommandDispatcher` must be:
+/// - **Deterministic**: Same events produce same state (required for replay)
+/// - **Side-effect free**: No IO, no external state (pure functions only)
+/// - **Version-aware**: Track version in `apply()` for optimistic concurrency
 #[derive(Debug)]
 pub struct CommandDispatcher<S, B> {
     store: S,
@@ -89,10 +172,56 @@ where
 {
     /// Dispatch a command through the full event-sourcing pipeline.
     ///
-    /// - `make_aggregate` must create an aggregate instance for the given tenant/id.
-    /// - Historical events are deserialized into `A::Event` and applied in order.
+    /// This method implements the complete command execution lifecycle:
     ///
-    /// Returns the committed stored events (with sequence numbers).
+    /// 1. **Load**: Retrieves all events for the aggregate from the event store
+    /// 2. **Validate**: Checks tenant isolation and event ordering (defense in depth)
+    /// 3. **Rehydrate**: Applies historical events to rebuild the aggregate's current state
+    /// 4. **Decide**: Calls `aggregate.handle(command)` to produce new events (pure, no mutation)
+    /// 5. **Persist**: Appends events to the store with optimistic concurrency check
+    /// 6. **Publish**: Publishes committed events to the event bus for downstream consumers
+    ///
+    /// ## Parameters
+    ///
+    /// - `tenant_id`: The tenant context (enforced throughout the pipeline)
+    /// - `aggregate_id`: The aggregate instance identifier
+    /// - `aggregate_type`: Type identifier for the aggregate (e.g., "inventory.item")
+    /// - `command`: The domain command to execute
+    /// - `make_aggregate`: Factory function to create a fresh aggregate instance
+    ///
+    /// ## Aggregate Factory Pattern
+    ///
+    /// The `make_aggregate` closure enables the dispatcher to work with any aggregate type
+    /// without needing to know how to construct it. This keeps the dispatcher generic and
+    /// allows domain code to control aggregate initialization (e.g., `InventoryItem::empty(id)`).
+    ///
+    /// ## Return Value
+    ///
+    /// Returns the committed `StoredEvent`s (with assigned sequence numbers) if successful.
+    /// These can be used for:
+    /// - Determining the new aggregate version
+    /// - Triggering downstream processing
+    /// - Idempotency checks (if needed)
+    ///
+    /// Returns `DispatchError` if any step fails (validation, concurrency, store error, etc.).
+    ///
+    /// ## Concurrency Safety
+    ///
+    /// This method uses **optimistic concurrency control**:
+    /// - Loads the current version from the event stream
+    /// - Expects that version when appending new events
+    /// - If version changed (concurrent modification), append fails with `DispatchError::Concurrency`
+    ///
+    /// Callers should retry by reloading and re-executing the command (or surface a conflict error).
+    ///
+    /// ## Tenant Isolation
+    ///
+    /// Tenant ID is validated at multiple points:
+    /// - Events are loaded scoped to `tenant_id`
+    /// - Loaded events are validated to ensure they belong to the correct tenant
+    /// - New events are created with the provided `tenant_id`
+    ///
+    /// This defense-in-depth approach prevents cross-tenant data leaks even if the store is buggy.
     pub fn dispatch<A>(
         &self,
         tenant_id: TenantId,

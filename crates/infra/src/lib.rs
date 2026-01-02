@@ -8,6 +8,9 @@ pub mod projections;
 pub mod workers;
 pub mod ai;
 
+#[cfg(test)]
+mod integration_tests;
+
 /// Database adapters (connection pools, repositories, migrations wiring).
 pub mod db {}
 

@@ -1,5 +1,6 @@
 //! HTTP API: server, routing, and request/response mapping.
 
+pub mod app;
 pub mod context;
 pub mod middleware;
 pub mod authz;
