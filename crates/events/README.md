@@ -28,6 +28,10 @@
   - `EventBus<M>` trait: `publish(M)` + `subscribe()`
   - `Subscription<M>`: blocking `recv()` and non-blocking `try_recv()`
   - `InMemoryEventBus<M>`: in-process pub/sub for tests/dev (best-effort fan-out)
+- **Projection builders**
+  - `ProjectionRunner`: replay envelopes into disposable read models
+  - Cursor/version tracking: `(tenant_id, last_sequence_number)`
+  - Tenant safety: `ProjectionRunner::new_for_tenant(...)`
 
 ## Event model guarantees
 
@@ -49,6 +53,7 @@ events/src/
   projection.rs  # Projection trait
   bus.rs         # EventBus / Subscription
   in_memory_bus.rs # InMemoryEventBus
+  runner.rs      # ProjectionRunner / ProjectionCursor
 ```
 
 ## Minimal usage (example)
