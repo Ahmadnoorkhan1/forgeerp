@@ -211,13 +211,8 @@ dependencies = [
 name = "forgeerp-core"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "chrono",
  "serde",
- "serde_json",
  "thiserror",
- "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 
@@ -936,6 +931,7 @@ checksum = "e2e054861b4bd027cd373e18e8d8d8e6548085000e41290d95ce0c373a654b4a"
 dependencies = [
  "getrandom",
  "js-sys",
+ "serde_core",
  "wasm-bindgen",
 ]
 

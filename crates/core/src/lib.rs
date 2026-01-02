@@ -1,12 +1,17 @@
-//! Core domain: entities, value objects, invariants.
+//! `forgeerp-core` — domain foundation building blocks.
+//!
+//! This crate contains **pure domain** primitives (no infrastructure concerns).
 
-/// Domain entities (aggregate roots, entities).
-pub mod entities {}
+pub mod aggregate;
+pub mod entity;
+pub mod error;
+pub mod id;
+pub mod value_object;
 
-/// Value objects (types with domain meaning and invariants).
-pub mod value_objects {}
-
-/// Domain invariants and validation errors.
-pub mod invariants {}
+pub use aggregate::AggregateRoot;
+pub use entity::Entity;
+pub use error::{DomainError, DomainResult};
+pub use id::{AggregateId, TenantId, UserId};
+pub use value_object::ValueObject;
 
 
