@@ -3,6 +3,7 @@
 //! At-least-once delivery is acceptable; consumers must be idempotent.
 
 use std::sync::mpsc::Receiver;
+use std::time::Duration;
 use std::sync::Arc;
 
 /// A subscription to an event stream.
@@ -24,6 +25,11 @@ impl<M> Subscription<M> {
     /// Try to receive a message without blocking.
     pub fn try_recv(&self) -> Result<M, std::sync::mpsc::TryRecvError> {
         self.receiver.try_recv()
+    }
+
+    /// Block for up to `timeout` waiting for a message.
+    pub fn recv_timeout(&self, timeout: Duration) -> Result<M, std::sync::mpsc::RecvTimeoutError> {
+        self.receiver.recv_timeout(timeout)
     }
 }
 

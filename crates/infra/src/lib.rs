@@ -5,6 +5,7 @@ pub mod event_store;
 pub mod command_dispatcher;
 pub mod read_model;
 pub mod projections;
+pub mod workers;
 
 /// Database adapters (connection pools, repositories, migrations wiring).
 pub mod db {}
