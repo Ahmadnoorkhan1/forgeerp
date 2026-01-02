@@ -52,6 +52,20 @@ where
         }
     }
 
+    /// Create a runner pinned to a specific tenant.
+    ///
+    /// This prevents accidentally starting a projection with an event from the
+    /// wrong tenant.
+    pub fn new_for_tenant(tenant_id: TenantId, projection: P) -> Self {
+        Self {
+            projection,
+            cursor: Some(ProjectionCursor {
+                tenant_id,
+                last_sequence_number: 0,
+            }),
+        }
+    }
+
     pub fn projection(&self) -> &P {
         &self.projection
     }

@@ -130,8 +130,10 @@ Environment variables (see `.env.example`):
 - **In-memory event bus**: `forgeerp_events::InMemoryEventBus`
 - **Command dispatcher**: `forgeerp_infra::command_dispatcher::CommandDispatcher`
   - Handles concurrency conflicts + deterministic domain validation errors
+  - Enforces tenant isolation by validating loaded streams (tenant_id + aggregate_id + monotonic sequence)
 - **Projection runner**: `forgeerp_events::ProjectionRunner`
   - Replay events to build disposable read models, with cursor/version tracking
+  - Supports tenant-pinned runners via `ProjectionRunner::new_for_tenant(...)`
 
 ## Optional features
 

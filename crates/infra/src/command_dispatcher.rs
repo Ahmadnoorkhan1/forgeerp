@@ -19,6 +19,8 @@ use crate::event_store::{EventStore, EventStoreError, StoredEvent, UncommittedEv
 pub enum DispatchError {
     /// Optimistic concurrency failure (e.g. stale aggregate version).
     Concurrency(String),
+    /// Tenant isolation violation (cross-tenant or cross-aggregate stream mixing).
+    TenantIsolation(String),
     /// Domain validation failure (deterministic).
     Validation(String),
     /// Domain invariant failure (deterministic).
@@ -39,6 +41,7 @@ impl From<EventStoreError> for DispatchError {
     fn from(value: EventStoreError) -> Self {
         match &value {
             EventStoreError::Concurrency(msg) => DispatchError::Concurrency(msg.clone()),
+            EventStoreError::TenantIsolation(msg) => DispatchError::TenantIsolation(msg.clone()),
             _ => DispatchError::Store(value),
         }
     }
@@ -104,6 +107,7 @@ where
     {
         // 1) Load history (tenant-scoped)
         let history = self.store.load_stream(tenant_id, aggregate_id)?;
+        validate_loaded_stream(tenant_id, aggregate_id, &history)?;
         let expected = ExpectedVersion::Exact(stream_version(&history));
 
         // 2) Rehydrate aggregate
@@ -146,6 +150,41 @@ where
 
 fn stream_version(stream: &[StoredEvent]) -> u64 {
     stream.last().map(|e| e.sequence_number).unwrap_or(0)
+}
+
+fn validate_loaded_stream(
+    tenant_id: TenantId,
+    aggregate_id: AggregateId,
+    stream: &[StoredEvent],
+) -> Result<(), DispatchError> {
+    // Enforce tenant isolation even if a buggy backend returns cross-tenant data.
+    // Also ensure the stream is monotonically increasing by sequence number.
+    let mut last = 0u64;
+    for (idx, e) in stream.iter().enumerate() {
+        if e.tenant_id != tenant_id {
+            return Err(DispatchError::TenantIsolation(format!(
+                "loaded stream contains wrong tenant_id at index {idx}"
+            )));
+        }
+        if e.aggregate_id != aggregate_id {
+            return Err(DispatchError::TenantIsolation(format!(
+                "loaded stream contains wrong aggregate_id at index {idx}"
+            )));
+        }
+        if e.sequence_number == 0 {
+            return Err(DispatchError::Store(EventStoreError::InvalidAppend(
+                "stored event has sequence_number=0".to_string(),
+            )));
+        }
+        if e.sequence_number <= last {
+            return Err(DispatchError::Store(EventStoreError::InvalidAppend(format!(
+                "non-monotonic sequence_number in loaded stream (last={last}, found={})",
+                e.sequence_number
+            ))));
+        }
+        last = e.sequence_number;
+    }
+    Ok(())
 }
 
 fn apply_history<A>(aggregate: &mut A, history: &[StoredEvent]) -> Result<(), DispatchError>
