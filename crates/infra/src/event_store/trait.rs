@@ -46,6 +46,18 @@ impl StoredEvent {
     pub fn stream_version(&self) -> u64 {
         self.sequence_number
     }
+
+    /// Convert a stored event into a tenant-scoped event envelope for publication.
+    pub fn to_envelope(&self) -> forgeerp_events::EventEnvelope<JsonValue> {
+        forgeerp_events::EventEnvelope::new(
+            self.event_id,
+            self.tenant_id,
+            self.aggregate_id,
+            self.aggregate_type.clone(),
+            self.sequence_number,
+            self.payload.clone(),
+        )
+    }
 }
 
 #[derive(Debug, Error)]
@@ -61,6 +73,9 @@ pub enum EventStoreError {
 
     #[error("invalid append: {0}")]
     InvalidAppend(String),
+
+    #[error("event publication failed: {0}")]
+    Publish(String),
 }
 
 /// Append-only, tenant-scoped event store.

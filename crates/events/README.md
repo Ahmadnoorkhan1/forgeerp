@@ -24,12 +24,18 @@
 - **Aggregate execution helper**
   - `handler::execute(&mut aggregate, &command)` runs **handle → apply** deterministically
   - No async, no IO, no side effects
+- **Event publication mechanics**
+  - `EventBus<M>` trait: `publish(M)` + `subscribe()`
+  - `Subscription<M>`: blocking `recv()` and non-blocking `try_recv()`
+  - `InMemoryEventBus<M>`: in-process pub/sub for tests/dev (best-effort fan-out)
 
 ## Event model guarantees
 
 - **Immutable**: treat events as facts; do not mutate after creation.
 - **Versioned**: events expose a schema version (`Event::version()`).
 - **Append-only**: envelopes carry a monotonically increasing `sequence_number`.
+  - Publishing is expected to happen **after** successful append (enforced by infra adapters).
+  - Delivery is **at-least-once** (consumers must be idempotent).
 
 ## Module map
 
@@ -41,6 +47,8 @@ events/src/
   command.rs     # Command trait
   handler.rs     # CommandHandler trait
   projection.rs  # Projection trait
+  bus.rs         # EventBus / Subscription
+  in_memory_bus.rs # InMemoryEventBus
 ```
 
 ## Minimal usage (example)
