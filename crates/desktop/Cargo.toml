@@ -1,0 +1,29 @@
+[package]
+name = "forgeerp-desktop"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+forgeerp-core = { path = "../core" }
+forgeerp-inventory = { path = "../inventory" }
+
+# Tauri (optional feature for full desktop app)
+tauri = { version = "2", optional = true, features = ["macos-private-api"] }
+reqwest = { version = "0.12", features = ["json"], optional = true }
+tokio = { version = "1", features = ["full"], optional = true }
+
+[features]
+default = []
+tauri = ["dep:tauri", "dep:reqwest", "dep:tokio"]
+
