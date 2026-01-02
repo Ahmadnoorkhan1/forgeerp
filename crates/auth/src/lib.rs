@@ -9,7 +9,7 @@ pub mod principal;
 pub mod roles;
 
 pub use authorize::{authorize, AuthzError, Principal};
-pub use claims::{JwtClaims, TokenValidationError, validate_claims};
+pub use claims::{Hs256JwtValidator, JwtClaims, JwtValidator, TokenValidationError, validate_claims};
 pub use permissions::Permission;
 pub use principal::{PrincipalId, TenantMembership};
 pub use roles::Role;

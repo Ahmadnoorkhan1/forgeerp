@@ -21,6 +21,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 forgeerp-observability = { path = "../observability" }
+forgeerp-auth = { path = "../auth" }
+forgeerp-core = { path = "../core" }
 
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }

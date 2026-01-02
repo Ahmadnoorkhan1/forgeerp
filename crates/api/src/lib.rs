@@ -1,5 +1,8 @@
 //! HTTP API: server, routing, and request/response mapping.
 
+pub mod context;
+pub mod middleware;
+
 /// HTTP server bootstrap and runtime wiring (no framework specifics yet).
 pub mod server {}
 
