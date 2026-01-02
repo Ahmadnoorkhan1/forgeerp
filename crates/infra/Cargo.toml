@@ -7,6 +7,8 @@ edition = "2024"
 path = "src/lib.rs"
 
 [dependencies]
+forgeerp-core = { path = "../core" }
+forgeerp-events = { path = "../events" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
