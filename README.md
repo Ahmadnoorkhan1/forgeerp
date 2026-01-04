@@ -96,6 +96,7 @@ ForgeERP's first AI feature is **inventory anomaly detection**: it analyzes stoc
 ### Infrastructure
 
 - ✅ **In-memory event store**: For development and testing
+- 🚧 **Postgres event store schema**: Designed and documented (migrations in `docker/migrations/`)
 - ✅ **In-memory event bus**: Local pub/sub
 - ✅ **Redis event bus** (optional): Distributed pub/sub via Redis
 - ✅ **Projection workers**: Background workers with graceful shutdown
@@ -155,6 +156,8 @@ This starts:
 - **API** on `localhost:8080`
 - **Postgres** on `localhost:5432` (with named volume)
 - **Redis** on `localhost:6379` (with named volume)
+
+**Note**: The Postgres event store schema is designed (see [`docker/migrations/`](docker/migrations/)), but the Rust implementation is still in progress. The API currently uses in-memory stores.
 
 ### Example: Create and Adjust Inventory
 
@@ -254,7 +257,7 @@ These are **non-negotiable boundaries** enforced across the codebase:
 - **Multi-tenancy is enforced at the event level**: Events carry `tenant_id` in their envelope
 - **Events are immutable, versioned, append-only**: This is the foundation
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for detailed diagrams including projection rebuild flow, AI insight flow, and multi-tenancy isolation.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for detailed diagrams including projection rebuild flow, AI insight flow, multi-tenancy isolation, and the Postgres event store schema.
 
 ### Repository Structure
 
@@ -315,7 +318,7 @@ ForgeERP is **actively developed** with a clear vision. Here's what's planned:
 
 ### Near-Term (Next 3-6 Months)
 
-- **Persistent event store**: Postgres-backed event store with migrations
+- **Persistent event store**: Postgres-backed event store implementation (schema designed ✓, Rust implementation in progress)
 - **Durable event bus**: Redis Streams or Kafka adapter for production event distribution
 - **More ERP modules**: Sales orders, purchase orders, basic accounting
 - **Database migrations**: SQL migration system for read model schemas
