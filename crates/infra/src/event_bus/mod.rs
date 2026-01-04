@@ -5,5 +5,10 @@
 
 #[cfg(feature = "redis")]
 pub mod redis_pubsub;
+#[cfg(feature = "redis")]
+pub mod redis_streams;
+
+#[cfg(feature = "redis")]
+pub use redis_streams::{RedisStreamsEventBus, RedisStreamsError};
 
 
