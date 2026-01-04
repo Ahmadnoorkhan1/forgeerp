@@ -24,7 +24,7 @@
 //! All operations use the SQLx connection pool which handles thread-safe connection management.
 
 use chrono::{DateTime, Utc};
-use sqlx::{PgPool, Postgres, Row, Transaction};
+use sqlx::{FromRow, PgPool, Postgres, Row, Transaction};
 use std::sync::Arc;
 use tracing::{instrument, Span};
 
@@ -192,7 +192,7 @@ impl PostgresEventStore {
             }
         }
 
-        let aggregate_type = &events[0].aggregate_type;
+        let aggregate_type = events[0].aggregate_type.clone();
 
         // Use a transaction for atomicity
         let mut tx = self
@@ -211,7 +211,7 @@ impl PostgresEventStore {
 
         // Validate aggregate type consistency
         if let Some(ref existing_type) = existing_aggregate_type {
-            if existing_type != aggregate_type {
+            if existing_type != &aggregate_type {
                 tx.rollback()
                     .await
                     .map_err(|e| map_sqlx_error("rollback", e))?;
@@ -267,7 +267,7 @@ impl PostgresEventStore {
         .bind(event.event_id)
         .bind(tenant_id.as_uuid())
         .bind(aggregate_id.as_uuid())
-        .bind(aggregate_type)
+        .bind(&aggregate_type)
         .bind(next_sequence as i64)
         .bind(&event.event_type)
         .bind(event.event_version as i32)
@@ -541,6 +541,7 @@ struct StoredEventRow {
     event_version: i32,
     occurred_at: DateTime<Utc>,
     payload: serde_json::Value,
+    #[allow(dead_code)] // Not used in StoredEvent, but kept for potential future use (e.g., monitoring)
     created_at: DateTime<Utc>,
 }
 

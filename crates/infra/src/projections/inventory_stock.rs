@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use serde_json::Value as JsonValue;
 use thiserror::Error;
@@ -10,6 +10,7 @@ use forgeerp_events::EventEnvelope;
 use forgeerp_inventory::{InventoryEvent, InventoryItemId};
 
 use crate::read_model::TenantStore;
+use crate::projections::cursor_store::ProjectionCursorStore;
 
 /// Queryable inventory read model: current stock per item.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,23 +43,122 @@ pub enum InventoryProjectionError {
 ///
 /// Consumes published envelopes (JSON payloads) and maintains a tenant-isolated read model.
 /// Read models are disposable and rebuildable from the event stream.
+///
+/// Supports both in-memory and persistent cursor tracking:
+/// - If `cursor_store` is `None`, uses in-memory cursors (existing behavior)
+/// - If `cursor_store` is `Some`, persists cursors to Postgres (resume after crash)
 #[derive(Debug)]
-pub struct InventoryStockProjection<S>
+pub struct InventoryStockProjection<S, C = InMemoryCursorStore>
 where
     S: TenantStore<InventoryItemId, InventoryReadModel>,
 {
     store: S,
     cursors: RwLock<HashMap<CursorKey, u64>>,
+    cursor_store: Option<Arc<C>>,
+    projection_name: String,
+}
+
+/// In-memory cursor store (default, no persistence).
+pub struct InMemoryCursorStore;
+
+impl ProjectionCursorStore for InMemoryCursorStore {
+    fn get_cursor(&self, _tenant_id: TenantId, _aggregate_id: AggregateId, _projection_name: &str) -> Option<u64> {
+        None // Always returns None, forcing use of in-memory cursors
+    }
+
+    fn update_cursor(&self, _tenant_id: TenantId, _aggregate_id: AggregateId, _projection_name: &str, _sequence_number: u64) {
+        // No-op for in-memory store
+    }
+
+    fn clear_cursors(&self, _tenant_id: TenantId, _projection_name: &str) {
+        // No-op for in-memory store
+    }
 }
 
 impl<S> InventoryStockProjection<S>
 where
     S: TenantStore<InventoryItemId, InventoryReadModel>,
 {
+    /// Create a new projection with in-memory cursor tracking.
     pub fn new(store: S) -> Self {
         Self {
             store,
             cursors: RwLock::new(HashMap::new()),
+            cursor_store: None,
+            projection_name: "inventory.stock".to_string(),
+        }
+    }
+}
+
+impl<S> InventoryStockProjection<S>
+where
+    S: TenantStore<InventoryItemId, InventoryReadModel>,
+{
+    /// Create a new projection with persistent cursor tracking.
+    pub fn with_persistent_cursors<C: ProjectionCursorStore + 'static>(
+        self,
+        cursor_store: Arc<C>,
+        projection_name: impl Into<String>,
+    ) -> InventoryStockProjection<S, C> {
+        InventoryStockProjection {
+            store: self.store,
+            cursors: RwLock::new(HashMap::new()),
+            cursor_store: Some(cursor_store),
+            projection_name: projection_name.into(),
+        }
+    }
+}
+
+impl<S, C> InventoryStockProjection<S, C>
+where
+    S: TenantStore<InventoryItemId, InventoryReadModel>,
+    C: ProjectionCursorStore + 'static,
+{
+}
+
+impl<S, C> InventoryStockProjection<S, C>
+where
+    S: TenantStore<InventoryItemId, InventoryReadModel>,
+    C: ProjectionCursorStore + 'static,
+{
+
+    /// Load cursor from persistent store if available, otherwise from memory.
+    fn get_cursor(&self, tenant_id: TenantId, aggregate_id: AggregateId) -> u64 {
+        if let Some(ref cursor_store) = self.cursor_store {
+            cursor_store
+                .get_cursor(tenant_id, aggregate_id, &self.projection_name)
+                .unwrap_or(0)
+        } else {
+            match self.cursors.read() {
+                Ok(cursors) => *cursors.get(&CursorKey { tenant_id, aggregate_id }).unwrap_or(&0),
+                Err(_) => 0,
+            }
+        }
+    }
+
+    /// Update cursor in both memory and persistent store (if available).
+    fn update_cursor(&self, tenant_id: TenantId, aggregate_id: AggregateId, sequence_number: u64) {
+        // Update in-memory cache
+        if let Ok(mut cursors) = self.cursors.write() {
+            cursors.insert(CursorKey { tenant_id, aggregate_id }, sequence_number);
+        }
+
+        // Persist to database if available
+        if let Some(ref cursor_store) = self.cursor_store {
+            cursor_store.update_cursor(tenant_id, aggregate_id, &self.projection_name, sequence_number);
+        }
+    }
+
+    /// Clear cursors in both memory and persistent store (if available).
+    fn clear_cursors(&self, tenant_id: TenantId) {
+        // Clear in-memory cache
+        if let Ok(mut cursors) = self.cursors.write() {
+            cursors.retain(|k, _| k.tenant_id != tenant_id);
+        }
+
+        // Clear persistent store if available
+        if let Some(ref cursor_store) = self.cursor_store {
+            cursor_store.clear_cursors(tenant_id, &self.projection_name);
         }
     }
 
@@ -88,74 +188,71 @@ where
         let seq = envelope.sequence_number();
 
         // Cursor check (per tenant + aggregate stream).
-        if let Ok(mut cursors) = self.cursors.write() {
-            let key = CursorKey { tenant_id, aggregate_id };
-            let last = *cursors.get(&key).unwrap_or(&0);
+        let last = self.get_cursor(tenant_id, aggregate_id);
 
-            if seq == 0 {
-                return Err(InventoryProjectionError::NonMonotonicSequence { last, found: seq });
-            }
-
-            if seq <= last {
-                // Duplicate or replay; safe to ignore.
-                return Ok(());
-            }
-
-            if seq != last + 1 && last != 0 {
-                // We allow first event to be any positive sequence (some stores start at 1),
-                // but after that we enforce strict monotonic increments.
-                return Err(InventoryProjectionError::NonMonotonicSequence { last, found: seq });
-            }
-
-            // Deserialize the inventory event from payload.
-            let inv: InventoryEvent = serde_json::from_value(envelope.payload().clone())
-                .map_err(|e| InventoryProjectionError::Deserialize(e.to_string()))?;
-
-            // Validate tenant isolation at the event level.
-            let (event_tenant, item_id) = match &inv {
-                InventoryEvent::ItemCreated(e) => (e.tenant_id, e.item_id),
-                InventoryEvent::StockAdjusted(e) => (e.tenant_id, e.item_id),
-            };
-
-            if event_tenant != tenant_id {
-                return Err(InventoryProjectionError::TenantIsolation(
-                    "event tenant_id does not match envelope tenant_id".to_string(),
-                ));
-            }
-
-            if item_id.0 != aggregate_id {
-                return Err(InventoryProjectionError::TenantIsolation(
-                    "event item_id does not match envelope aggregate_id".to_string(),
-                ));
-            }
-
-            // Apply update.
-            match inv {
-                InventoryEvent::ItemCreated(e) => {
-                    self.store.upsert(
-                        tenant_id,
-                        e.item_id,
-                        InventoryReadModel {
-                            item_id: e.item_id,
-                            name: e.name,
-                            quantity: 0,
-                        },
-                    );
-                }
-                InventoryEvent::StockAdjusted(e) => {
-                    let mut rm = self.store.get(tenant_id, &e.item_id).unwrap_or(InventoryReadModel {
-                        item_id: e.item_id,
-                        name: String::new(),
-                        quantity: 0,
-                    });
-                    rm.quantity += e.delta;
-                    self.store.upsert(tenant_id, e.item_id, rm);
-                }
-            }
-
-            // Advance cursor after successful apply.
-            cursors.insert(key, seq);
+        if seq == 0 {
+            return Err(InventoryProjectionError::NonMonotonicSequence { last, found: seq });
         }
+
+        if seq <= last {
+            // Duplicate or replay; safe to ignore.
+            return Ok(());
+        }
+
+        if seq != last + 1 && last != 0 {
+            // We allow first event to be any positive sequence (some stores start at 1),
+            // but after that we enforce strict monotonic increments.
+            return Err(InventoryProjectionError::NonMonotonicSequence { last, found: seq });
+        }
+
+        // Deserialize the inventory event from payload.
+        let inv: InventoryEvent = serde_json::from_value(envelope.payload().clone())
+            .map_err(|e| InventoryProjectionError::Deserialize(e.to_string()))?;
+
+        // Validate tenant isolation at the event level.
+        let (event_tenant, item_id) = match &inv {
+            InventoryEvent::ItemCreated(e) => (e.tenant_id, e.item_id),
+            InventoryEvent::StockAdjusted(e) => (e.tenant_id, e.item_id),
+        };
+
+        if event_tenant != tenant_id {
+            return Err(InventoryProjectionError::TenantIsolation(
+                "event tenant_id does not match envelope tenant_id".to_string(),
+            ));
+        }
+
+        if item_id.0 != aggregate_id {
+            return Err(InventoryProjectionError::TenantIsolation(
+                "event item_id does not match envelope aggregate_id".to_string(),
+            ));
+        }
+
+        // Apply update.
+        match inv {
+            InventoryEvent::ItemCreated(e) => {
+                self.store.upsert(
+                    tenant_id,
+                    e.item_id,
+                    InventoryReadModel {
+                        item_id: e.item_id,
+                        name: e.name,
+                        quantity: 0,
+                    },
+                );
+            }
+            InventoryEvent::StockAdjusted(e) => {
+                let mut rm = self.store.get(tenant_id, &e.item_id).unwrap_or(InventoryReadModel {
+                    item_id: e.item_id,
+                    name: String::new(),
+                    quantity: 0,
+                });
+                rm.quantity += e.delta;
+                self.store.upsert(tenant_id, e.item_id, rm);
+            }
+        }
+
+        // Advance cursor after successful apply.
+        self.update_cursor(tenant_id, aggregate_id, seq);
 
         Ok(())
     }
@@ -165,11 +262,6 @@ where
         &self,
         envelopes: impl IntoIterator<Item = EventEnvelope<JsonValue>>,
     ) -> Result<(), InventoryProjectionError> {
-        // Reset cursors; read model values are disposable, but store is opaque.
-        if let Ok(mut cursors) = self.cursors.write() {
-            cursors.clear();
-        }
-
         let mut envs: Vec<_> = envelopes.into_iter().collect();
 
         // Clear read model per tenant before rebuilding.
@@ -178,9 +270,13 @@ where
             tenants.sort_by_key(|t| *t.as_uuid().as_bytes());
             tenants.dedup();
             for t in tenants {
+                // Clear read models
                 self.store.clear_tenant(t);
+                // Clear cursors (both in-memory and persistent)
+                self.clear_cursors(t);
             }
         }
+
 
         // Deterministic replay order: tenant, aggregate, sequence.
         envs.sort_by_key(|e| {
@@ -199,9 +295,10 @@ where
     }
 }
 
-impl<S> ReadModelReader<InventorySnapshot> for InventoryStockProjection<S>
+impl<S, C> ReadModelReader<InventorySnapshot> for InventoryStockProjection<S, C>
 where
     S: TenantStore<InventoryItemId, InventoryReadModel> + Send + Sync + 'static,
+    C: ProjectionCursorStore + 'static,
 {
     fn get_snapshot(&self, tenant_id: TenantId) -> Result<InventorySnapshot, AiError> {
         let items = self
