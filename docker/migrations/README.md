@@ -27,31 +27,29 @@ The `snapshots` table stores aggregate state snapshots:
 
 ## Running Migrations
 
-### Using Docker Compose
+ForgeERP uses SQLx for database migrations. See [`MIGRATIONS.md`](../../MIGRATIONS.md) for complete documentation.
+
+### Quick Start
 
 ```bash
-# Run migrations via Docker
+# Using Docker Compose (recommended)
 docker compose run --rm migrate
+
+# Using local sqlx-cli
+./scripts/migrate.sh run
+
+# Check migration status
+./scripts/migrate.sh info
 ```
 
-### Manual Execution
+### Migration Files
 
-```bash
-# Connect to Postgres
-psql -h localhost -U forgeerp -d forgeerp
+1. **`001_create_events_table.sql`**: Creates the `events` table with append-only constraints
+2. **`002_create_snapshots_table.sql`**: Creates the `snapshots` table for aggregate state snapshots
+3. **`003_create_rls_policies.sql`**: Optional Row-Level Security policies for tenant isolation
+4. **`004_create_read_models.sql`**: Creates `inventory_stock` and `projection_offsets` tables
 
-# Run migrations in order
-\i docker/migrations/001_create_events_table.sql
-\i docker/migrations/002_create_snapshots_table.sql
-\i docker/migrations/003_create_rls_policies.sql
-```
-
-### Using Migration Tools
-
-For production, consider using a migration tool like:
-- [sqlx migrate](https://github.com/launchbadge/sqlx)
-- [refinery](https://github.com/rust-db/refinery)
-- [diesel migrations](https://diesel.rs/guides/migrations/)
+All migrations are **idempotent** and can be run multiple times safely.
 
 ## Snapshot Policy
 

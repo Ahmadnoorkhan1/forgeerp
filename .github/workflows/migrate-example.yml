@@ -1,0 +1,48 @@
+# Example GitHub Actions workflow for running migrations in CI
+#
+# This is an example workflow. Copy and adapt to your CI/CD system.
+#
+# Prerequisites:
+# - DATABASE_URL secret configured in GitHub repository settings
+# - Database accessible from CI environment
+
+name: Database Migrations
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docker/migrations/**'
+  workflow_dispatch:
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      
+      - name: Install sqlx-cli
+        run: |
+          cargo install sqlx-cli --no-default-features --features postgres
+      
+      - name: Run database migrations
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          sqlx migrate --source docker/migrations info
+          sqlx migrate --source docker/migrations run
+      
+      - name: Verify migrations
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          sqlx migrate --source docker/migrations info
+
