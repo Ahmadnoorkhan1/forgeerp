@@ -499,3 +499,77 @@ See [`docker/migrations/003_create_rls_policies.sql`](../docker/migrations/003_c
 
 The schema is optimized for the primary use case: loading event streams for command execution. Secondary use cases (tenant-wide replay, time-based queries) are supported with additional indexes.
 
+### Postgres Command → DB Commit Flow
+
+The PostgresEventStore implementation uses transactions to ensure atomicity and enforce optimistic concurrency control. This diagram shows the detailed database interaction flow:
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant CommandDispatcher
+    participant PostgresEventStore
+    participant PostgresDB as PostgreSQL
+    
+    Client->>CommandDispatcher: execute_command(tenant_id, cmd)
+    
+    Note over CommandDispatcher: 1. Load aggregate
+    
+    CommandDispatcher->>PostgresEventStore: load_stream(tenant_id, agg_id)
+    PostgresEventStore->>PostgresDB: SELECT * FROM events<br/>WHERE tenant_id=? AND aggregate_id=?<br/>ORDER BY sequence_number
+    PostgresDB-->>PostgresEventStore: Stream events (sequence 1..N)
+    PostgresEventStore-->>CommandDispatcher: Vec<StoredEvent>
+    
+    Note over CommandDispatcher: 2. Rehydrate aggregate<br/>3. Handle command<br/>4. Generate events
+    
+    CommandDispatcher->>PostgresEventStore: append(events, ExpectedVersion::Exact(current_version))
+    
+    Note over PostgresEventStore: Atomic append with<br/>optimistic concurrency control
+    
+    PostgresEventStore->>PostgresDB: BEGIN (write transaction)
+    
+    PostgresEventStore->>PostgresDB: SELECT MAX(sequence_number),<br/>MAX(aggregate_type)<br/>FROM events<br/>WHERE tenant_id=? AND aggregate_id=?
+    PostgresDB-->>PostgresEventStore: (current_version, aggregate_type)
+    
+    alt Version mismatch
+        PostgresEventStore->>PostgresDB: ROLLBACK
+        PostgresEventStore-->>CommandDispatcher: EventStoreError::Concurrency
+        CommandDispatcher-->>Client: Conflict error
+    else Version matches
+        loop For each event
+            PostgresEventStore->>PostgresDB: INSERT INTO events<br/>(event_id, tenant_id, aggregate_id,<br/>sequence_number, event_type, ...)<br/>VALUES (..., current_version + N, ...)
+        end
+        
+        alt Unique constraint violation (concurrent append)
+            PostgresDB-->>PostgresEventStore: Error 23505 (unique violation)
+            PostgresEventStore->>PostgresDB: ROLLBACK
+            PostgresEventStore-->>CommandDispatcher: EventStoreError::Concurrency
+            CommandDispatcher-->>Client: Conflict error
+        else Success
+            PostgresEventStore->>PostgresDB: COMMIT
+            PostgresDB-->>PostgresEventStore: Events persisted
+            PostgresEventStore-->>CommandDispatcher: Vec<StoredEvent>
+            CommandDispatcher-->>Client: Success
+        end
+    end
+```
+
+**Key Implementation Details:**
+
+1. **Tenant Isolation**: Every query includes `tenant_id` in the WHERE clause, making cross-tenant access architecturally impossible.
+
+2. **Optimistic Concurrency**: 
+   - Version check happens within a transaction to prevent race conditions
+   - Unique constraint on `(tenant_id, aggregate_id, sequence_number)` provides a second layer of protection
+   - If two transactions try to append simultaneously, one will fail with a unique constraint violation (PostgreSQL error code `23505`)
+
+3. **Atomicity**: All events in a batch are inserted within a single transaction (all-or-nothing). If any insert fails, the entire batch is rolled back.
+
+4. **Tracing**: All database operations are instrumented with tracing spans (`#[instrument]`) for observability in production.
+
+5. **Error Mapping**: SQLx errors are mapped to `EventStoreError` types:
+   - Unique violations (`23505`) → `EventStoreError::Concurrency`
+   - Check constraint violations (`23514`) → `EventStoreError::InvalidAppend`
+   - Other database errors → `EventStoreError::InvalidAppend`
+
+See [`crates/infra/src/event_store/postgres.rs`](../crates/infra/src/event_store/postgres.rs) for the full implementation.
+

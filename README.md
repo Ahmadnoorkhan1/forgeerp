@@ -257,7 +257,7 @@ These are **non-negotiable boundaries** enforced across the codebase:
 - **Multi-tenancy is enforced at the event level**: Events carry `tenant_id` in their envelope
 - **Events are immutable, versioned, append-only**: This is the foundation
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for detailed diagrams including projection rebuild flow, AI insight flow, multi-tenancy isolation, and the Postgres event store schema.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for detailed diagrams including projection rebuild flow, AI insight flow, multi-tenancy isolation, Postgres event store schema, and the Postgres command → DB commit flow.
 
 ### Repository Structure
 
