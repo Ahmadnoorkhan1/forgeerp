@@ -4,9 +4,11 @@
 //! loading tenant-scoped event streams without making any storage assumptions.
 
 pub mod in_memory;
+pub mod postgres;
 pub mod r#trait;
 
 pub use in_memory::InMemoryEventStore;
+pub use postgres::{PostgresEventStore, Snapshot};
 pub use r#trait::{EventStore, EventStoreError, StoredEvent, UncommittedEvent};
 
 /// Adapter that publishes committed events to an `EventBus` after a successful append.

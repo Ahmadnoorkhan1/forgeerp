@@ -24,6 +24,8 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 redis = { version = "0.25", optional = true }
+sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls", "uuid", "chrono", "json"], default-features = false }
+tokio = { version = "1", features = ["rt"] }
 
 [[bench]]
 name = "event_sourcing_benchmarks"
