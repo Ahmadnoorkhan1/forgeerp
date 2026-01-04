@@ -157,7 +157,14 @@ This starts:
 - **Postgres** on `localhost:5432` (with named volume)
 - **Redis** on `localhost:6379` (with named volume)
 
-**Note**: The Postgres event store schema is designed (see [`docker/migrations/`](docker/migrations/)), but the Rust implementation is still in progress. The API currently uses in-memory stores.
+**Database Migrations**: Run migrations automatically:
+```bash
+# Migrations run automatically when using docker compose up
+# Or run manually:
+docker compose run --rm migrate
+```
+
+See [`MIGRATIONS.md`](MIGRATIONS.md) for complete migration documentation.
 
 ### Example: Create and Adjust Inventory
 
