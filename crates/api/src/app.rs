@@ -18,12 +18,20 @@ use forgeerp_ai::AiResult;
 use forgeerp_infra::{
     ai::{AiInsightSink, InventoryAnomalyRunner, InventoryAnomalyRunnerHandle},
     command_dispatcher::{CommandDispatcher, DispatchError},
-    event_store::InMemoryEventStore,
+    event_store::{InMemoryEventStore, StoredEvent},
     projections::inventory_stock::{InventoryReadModel, InventoryStockProjection},
     read_model::InMemoryTenantStore,
 };
+#[cfg(feature = "redis")]
+use forgeerp_infra::{
+    event_bus::RedisStreamsEventBus,
+    event_store::PostgresEventStore,
+    read_model::PostgresInventoryStore,
+};
 use forgeerp_inventory::{AdjustStock, CreateItem, InventoryCommand, InventoryItem, InventoryItemId};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "redis")]
+use sqlx::PgPool;
 
 #[derive(Debug, Clone, Serialize)]
 struct RealtimeMessage {
@@ -69,23 +77,38 @@ impl AiInsightSink for ApiAiInsightSink {
     }
 }
 
+// Type-erased dispatcher for in-memory implementations
+type InMemoryDispatcher = CommandDispatcher<
+    Arc<InMemoryEventStore>,
+    Arc<InMemoryEventBus<EventEnvelope<serde_json::Value>>>,
+>;
+
+// Type-erased dispatcher for persistent implementations
+#[cfg(feature = "redis")]
+type PersistentDispatcher = CommandDispatcher<
+    Arc<PostgresEventStore>,
+    Arc<RedisStreamsEventBus>,
+>;
+
 #[derive(Clone)]
-struct AppServices {
-    dispatcher: Arc<
-        CommandDispatcher<
-            Arc<InMemoryEventStore>,
-            Arc<InMemoryEventBus<EventEnvelope<serde_json::Value>>>,
-        >,
-    >,
-    projection: Arc<InventoryStockProjection<Arc<InMemoryTenantStore<InventoryItemId, InventoryReadModel>>>>,
-    ai_sink: Arc<ApiAiInsightSink>,
-    realtime_tx: broadcast::Sender<RealtimeMessage>,
+enum AppServices {
+    InMemory {
+        dispatcher: Arc<InMemoryDispatcher>,
+        projection: Arc<InventoryStockProjection<Arc<InMemoryTenantStore<InventoryItemId, InventoryReadModel>>>>,
+        ai_sink: Arc<ApiAiInsightSink>,
+        realtime_tx: broadcast::Sender<RealtimeMessage>,
+    },
+    #[cfg(feature = "redis")]
+    Persistent {
+        dispatcher: Arc<PersistentDispatcher>,
+        projection: Arc<InventoryStockProjection<Arc<PostgresInventoryStore>>>,
+        ai_sink: Arc<ApiAiInsightSink>,
+        realtime_tx: broadcast::Sender<RealtimeMessage>,
+        bus: Arc<RedisStreamsEventBus>,
+    },
 }
 
-pub fn build_app(jwt_secret: String) -> Router {
-    let jwt = Arc::new(forgeerp_auth::Hs256JwtValidator::new(jwt_secret.into_bytes()));
-    let auth_state = crate::middleware::AuthState { jwt };
-
+fn build_in_memory_services() -> AppServices {
     // In-memory infra wiring (dev/test): store + bus + projection.
     let store = Arc::new(InMemoryEventStore::new());
     let bus: Arc<InMemoryEventBus<EventEnvelope<serde_json::Value>>> = Arc::new(InMemoryEventBus::new());
@@ -149,13 +172,221 @@ pub fn build_app(jwt_secret: String) -> Router {
         });
     }
 
-    let dispatcher: Arc<CommandDispatcher<_, _>> = Arc::new(CommandDispatcher::new(store, bus));
-    let services = Arc::new(AppServices {
+    let dispatcher: Arc<InMemoryDispatcher> = Arc::new(CommandDispatcher::new(store, bus));
+    AppServices::InMemory {
         dispatcher,
         projection,
         ai_sink,
         realtime_tx,
-    });
+    }
+}
+
+#[cfg(feature = "redis")]
+async fn build_persistent_services() -> AppServices {
+    let database_url = std::env::var("DATABASE_URL")
+        .expect("DATABASE_URL must be set when USE_PERSISTENT_STORES=true");
+    let redis_url = std::env::var("REDIS_URL")
+        .unwrap_or_else(|_| "redis://localhost:6379".to_string());
+
+    // Create Postgres connection pool
+    let pool = PgPool::connect(&database_url)
+        .await
+        .expect("Failed to connect to Postgres");
+
+    // Create persistent event store
+    let store = Arc::new(PostgresEventStore::new(pool.clone()));
+
+    // Create Redis Streams event bus
+    let bus = Arc::new(
+        RedisStreamsEventBus::new(&redis_url, None, None)
+            .expect("Failed to create Redis Streams event bus")
+    );
+
+    // Ensure consumer group exists for inventory projection
+    bus.ensure_consumer_group("inventory.projection")
+        .expect("Failed to create consumer group");
+
+    // Create persistent read model store
+    let rm_store = Arc::new(PostgresInventoryStore::new(pool));
+    let projection: Arc<InventoryStockProjection<_>> =
+        Arc::new(InventoryStockProjection::new(rm_store));
+
+    // Realtime channel (SSE): lossy broadcast, tenant-filtered in handlers.
+    let (realtime_tx, _realtime_rx) = broadcast::channel::<RealtimeMessage>(256);
+
+    // AI wiring (dev/test): in-memory insights + per-tenant anomaly runners.
+    let ai_sink: Arc<ApiAiInsightSink> = Arc::new(ApiAiInsightSink::new(realtime_tx.clone()));
+    let ai_runners: Arc<Mutex<HashMap<TenantId, InventoryAnomalyRunnerHandle>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let ai_runner_cfg = InventoryAnomalyRunner::default();
+
+    // Background subscriber: bus -> projection (Redis Streams with consumer group)
+    {
+        let bus = bus.clone();
+        let projection = projection.clone();
+        let ai_sink = ai_sink.clone();
+        let ai_runners = ai_runners.clone();
+        let realtime_tx = realtime_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let sub = bus.subscribe_with_group(
+                "inventory.projection",
+                &format!("consumer-{}", uuid::Uuid::now_v7()),
+                None, // No tenant filter - process all tenants
+            );
+            loop {
+                match sub.recv() {
+                    Ok(env) => {
+                        if let Err(e) = projection.apply_envelope(&env) {
+                            tracing::warn!("projection apply failed: {e}");
+                            continue;
+                        }
+
+                        // Broadcast projection update (lossy; no backpressure on core).
+                        let _ = realtime_tx.send(RealtimeMessage {
+                            tenant_id: env.tenant_id(),
+                            topic: "inventory.projection_updated".to_string(),
+                            payload: serde_json::json!({
+                                "kind": "projection_update",
+                                "aggregate_type": env.aggregate_type(),
+                                "aggregate_id": env.aggregate_id().to_string(),
+                                "sequence_number": env.sequence_number(),
+                            }),
+                        });
+
+                        // Event-triggered AI execution (after successful projection update).
+                        let tenant_id = env.tenant_id();
+                        let mut runners = ai_runners.lock().unwrap();
+                        let handle = runners.entry(tenant_id).or_insert_with(|| {
+                            ai_runner_cfg.spawn_for_tenant(
+                                "ai.inventory_anomaly",
+                                tenant_id,
+                                projection.clone(),
+                                ai_sink.clone(),
+                            )
+                        });
+                        handle.trigger();
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
+    let dispatcher: Arc<PersistentDispatcher> = Arc::new(CommandDispatcher::new(store, bus.clone()));
+    AppServices::Persistent {
+        dispatcher,
+        projection,
+        ai_sink,
+        realtime_tx,
+        bus,
+    }
+}
+
+impl AppServices {
+    fn realtime_tx(&self) -> &broadcast::Sender<RealtimeMessage> {
+        match self {
+            AppServices::InMemory { realtime_tx, .. } => realtime_tx,
+            #[cfg(feature = "redis")]
+            AppServices::Persistent { realtime_tx, .. } => realtime_tx,
+        }
+    }
+
+    fn ai_sink(&self) -> &Arc<ApiAiInsightSink> {
+        match self {
+            AppServices::InMemory { ai_sink, .. } => ai_sink,
+            #[cfg(feature = "redis")]
+            AppServices::Persistent { ai_sink, .. } => ai_sink,
+        }
+    }
+
+    fn dispatch_in_memory(
+        &self,
+        tenant_id: TenantId,
+        aggregate_id: AggregateId,
+        aggregate_type: &str,
+        command: InventoryCommand,
+        empty_fn: impl FnOnce(TenantId, AggregateId) -> InventoryItem,
+    ) -> Result<Vec<StoredEvent>, DispatchError> {
+        match self {
+            AppServices::InMemory { dispatcher, .. } => {
+                dispatcher.dispatch::<InventoryItem>(tenant_id, aggregate_id, aggregate_type, command, empty_fn)
+            }
+            #[cfg(feature = "redis")]
+            AppServices::Persistent { .. } => {
+                unreachable!("dispatch_in_memory called on Persistent services")
+            }
+        }
+    }
+
+    #[cfg(feature = "redis")]
+    fn dispatch_persistent(
+        &self,
+        tenant_id: TenantId,
+        aggregate_id: AggregateId,
+        aggregate_type: &str,
+        command: InventoryCommand,
+        empty_fn: impl FnOnce(TenantId, AggregateId) -> InventoryItem,
+    ) -> Result<Vec<StoredEvent>, DispatchError> {
+        match self {
+            AppServices::InMemory { .. } => {
+                unreachable!("dispatch_persistent called on InMemory services")
+            }
+            AppServices::Persistent { dispatcher, .. } => {
+                dispatcher.dispatch::<InventoryItem>(tenant_id, aggregate_id, aggregate_type, command, empty_fn)
+            }
+        }
+    }
+
+    fn get_item_in_memory(&self, tenant_id: TenantId, item_id: &InventoryItemId) -> Option<InventoryReadModel> {
+        match self {
+            AppServices::InMemory { projection, .. } => {
+                projection.get(tenant_id, item_id)
+            }
+            #[cfg(feature = "redis")]
+            AppServices::Persistent { .. } => {
+                unreachable!("get_item_in_memory called on Persistent services")
+            }
+        }
+    }
+
+    #[cfg(feature = "redis")]
+    fn get_item_persistent(&self, tenant_id: TenantId, item_id: &InventoryItemId) -> Option<InventoryReadModel> {
+        match self {
+            AppServices::InMemory { .. } => {
+                unreachable!("get_item_persistent called on InMemory services")
+            }
+            AppServices::Persistent { projection, .. } => {
+                projection.get(tenant_id, item_id)
+            }
+        }
+    }
+}
+
+pub async fn build_app(jwt_secret: String) -> Router {
+    let jwt = Arc::new(forgeerp_auth::Hs256JwtValidator::new(jwt_secret.into_bytes()));
+    let auth_state = crate::middleware::AuthState { jwt };
+
+    // Check environment variables to determine which implementation to use
+    let use_persistent = std::env::var("USE_PERSISTENT_STORES")
+        .unwrap_or_else(|_| "false".to_string())
+        .parse::<bool>()
+        .unwrap_or(false);
+
+    let services = if use_persistent {
+        #[cfg(feature = "redis")]
+        {
+            build_persistent_services().await
+        }
+        #[cfg(not(feature = "redis"))]
+        {
+            tracing::warn!("USE_PERSISTENT_STORES=true but redis feature not enabled, falling back to in-memory");
+            build_in_memory_services()
+        }
+    } else {
+        build_in_memory_services()
+    };
+
+    let services = Arc::new(services);
 
     // Protected routes: require auth + tenant context.
     let protected = Router::new()
@@ -194,7 +425,7 @@ async fn stream(
     Extension(tenant): Extension<crate::context::TenantContext>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<SseEvent, Infallible>>> {
     let tenant_id = tenant.tenant_id();
-    let rx = services.realtime_tx.subscribe();
+    let rx = services.realtime_tx().subscribe();
 
     let stream = BroadcastStream::new(rx).filter_map(move |msg| match msg {
         Ok(m) if m.tenant_id == tenant_id => {
@@ -273,13 +504,27 @@ async fn create_item(
         return json_error(StatusCode::FORBIDDEN, "forbidden", e.to_string());
     }
 
-    let committed = match services.dispatcher.dispatch::<InventoryItem>(
-        tenant.tenant_id(),
-        agg,
-        "inventory.item",
-        cmd_auth.inner,
-        |_tenant_id, aggregate_id| InventoryItem::empty(InventoryItemId::new(aggregate_id)),
-    ) {
+    let committed = match match &*services {
+        AppServices::InMemory { .. } => {
+            services.dispatch_in_memory(
+                tenant.tenant_id(),
+                agg,
+                "inventory.item",
+                cmd_auth.inner,
+                |_tenant_id, aggregate_id| InventoryItem::empty(InventoryItemId::new(aggregate_id)),
+            )
+        }
+        #[cfg(feature = "redis")]
+        AppServices::Persistent { .. } => {
+            services.dispatch_persistent(
+                tenant.tenant_id(),
+                agg,
+                "inventory.item",
+                cmd_auth.inner,
+                |_tenant_id, aggregate_id| InventoryItem::empty(InventoryItemId::new(aggregate_id)),
+            )
+        }
+    } {
         Ok(c) => c,
         Err(e) => return dispatch_error_to_response(e),
     };
@@ -324,13 +569,27 @@ async fn adjust_stock(
         return json_error(StatusCode::FORBIDDEN, "forbidden", e.to_string());
     }
 
-    let committed = match services.dispatcher.dispatch::<InventoryItem>(
-        tenant.tenant_id(),
-        agg,
-        "inventory.item",
-        cmd_auth.inner,
-        |_tenant_id, aggregate_id| InventoryItem::empty(InventoryItemId::new(aggregate_id)),
-    ) {
+    let committed = match match &*services {
+        AppServices::InMemory { .. } => {
+            services.dispatch_in_memory(
+                tenant.tenant_id(),
+                agg,
+                "inventory.item",
+                cmd_auth.inner,
+                |_tenant_id, aggregate_id| InventoryItem::empty(InventoryItemId::new(aggregate_id)),
+            )
+        }
+        #[cfg(feature = "redis")]
+        AppServices::Persistent { .. } => {
+            services.dispatch_persistent(
+                tenant.tenant_id(),
+                agg,
+                "inventory.item",
+                cmd_auth.inner,
+                |_tenant_id, aggregate_id| InventoryItem::empty(InventoryItemId::new(aggregate_id)),
+            )
+        }
+    } {
         Ok(c) => c,
         Err(e) => return dispatch_error_to_response(e),
     };
@@ -357,7 +616,16 @@ async fn get_item(
     };
 
     let item_id = InventoryItemId::new(agg);
-    match services.projection.get(tenant.tenant_id(), &item_id) {
+    let rm = match &*services {
+        AppServices::InMemory { .. } => {
+            services.get_item_in_memory(tenant.tenant_id(), &item_id)
+        }
+        #[cfg(feature = "redis")]
+        AppServices::Persistent { .. } => {
+            services.get_item_persistent(tenant.tenant_id(), &item_id)
+        }
+    };
+    match rm {
         Some(rm) => (StatusCode::OK, Json(read_model_to_json(rm))).into_response(),
         None => json_error(StatusCode::NOT_FOUND, "not_found", "item not found"),
     }
@@ -368,7 +636,7 @@ async fn get_inventory_anomalies(
     Extension(tenant): Extension<crate::context::TenantContext>,
 ) -> axum::response::Response {
     let tenant_id = tenant.tenant_id();
-    let all = services.ai_sink.all();
+    let all = services.ai_sink().all();
 
     let mut anomalies: Vec<serde_json::Value> = Vec::new();
     for (t, r) in all {
@@ -407,7 +675,7 @@ async fn get_inventory_item_insights(
     };
     let item_id = agg.to_string();
 
-    let all = services.ai_sink.all();
+    let all = services.ai_sink().all();
     let mut item_anomalies: Vec<serde_json::Value> = Vec::new();
 
     for (t, r) in all {

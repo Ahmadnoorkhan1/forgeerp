@@ -16,10 +16,8 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::Duration;
 
-use redis::Commands;
 use serde_json::Value as JsonValue;
 use tracing::{error, instrument, warn};
 
@@ -326,11 +324,14 @@ impl RedisStreamsEventBus {
 
         let stream_data = match result {
             Ok(data) => data,
-            Err(redis::RedisError::from((
-                redis::ErrorKind::TypeError,
-                "Timeout",
-            ))) => return Ok(vec![]), // Blocking timeout, no new messages
-            Err(e) => return Err(RedisStreamsError::Command(format!("XREADGROUP failed: {}", e))),
+            Err(e) => {
+                // Check if it's a timeout error (blocking timeout, no new messages)
+                if e.kind() == redis::ErrorKind::TypeError && 
+                   e.to_string().contains("timeout") {
+                    return Ok(vec![]);
+                }
+                return Err(RedisStreamsError::Command(format!("XREADGROUP failed: {}", e)));
+            }
         };
 
         let entries = stream_data
@@ -549,7 +550,7 @@ impl EventBus<EventEnvelope<JsonValue>> for RedisStreamsEventBus {
         // Users should use subscribe_with_group() for proper consumer groups
         self.subscribe_with_group(
             "default",
-            &format!("consumer-{}", uuid::Uuid::new_v4()),
+            &format!("consumer-{}", uuid::Uuid::now_v7()),
             None,
         )
     }

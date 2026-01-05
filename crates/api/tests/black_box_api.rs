@@ -13,7 +13,7 @@ struct TestServer {
 impl TestServer {
     async fn spawn(jwt_secret: &str) -> Self {
         // Build app (same router as prod), but bind to an ephemeral port.
-        let app = forgeerp_api::app::build_app(jwt_secret.to_string());
+        let app = forgeerp_api::app::build_app(jwt_secret.to_string()).await;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("failed to bind ephemeral port");

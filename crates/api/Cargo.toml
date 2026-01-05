@@ -10,6 +10,10 @@ path = "src/lib.rs"
 name = "forgeerp-api"
 path = "src/main.rs"
 
+[features]
+default = []
+redis = []
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -23,7 +27,8 @@ tracing-subscriber = { workspace = true }
 forgeerp-observability = { path = "../observability" }
 forgeerp-auth = { path = "../auth" }
 forgeerp-core = { path = "../core" }
-forgeerp-infra = { path = "../infra" }
+forgeerp-infra = { path = "../infra", features = ["redis"] }
+sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls", "uuid", "chrono", "json"], default-features = false }
 forgeerp-inventory = { path = "../inventory" }
 forgeerp-events = { path = "../events" }
 forgeerp-ai = { path = "../ai" }

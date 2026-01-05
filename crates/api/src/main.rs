@@ -7,7 +7,7 @@ async fn main() {
         "dev-secret".to_string()
     });
 
-    let app = forgeerp_api::app::build_app(jwt_secret);
+    let app = forgeerp_api::app::build_app(jwt_secret).await;
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")
         .await
