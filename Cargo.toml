@@ -12,6 +12,7 @@ members = [
   "crates/sales",
   "crates/invoicing",
   "crates/purchasing",
+  "crates/accounting",
   "crates/infra",
   "crates/observability",
   "crates/desktop",

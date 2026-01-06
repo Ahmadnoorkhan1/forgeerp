@@ -1115,6 +1115,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
+name = "forgeerp-accounting"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "forgeerp-core",
+ "forgeerp-events",
+ "proptest",
+ "serde",
+ "uuid",
+]
+
+[[package]]
 name = "forgeerp-ai"
 version = "0.1.0"
 dependencies = [
@@ -1208,6 +1220,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "criterion",
+ "forgeerp-accounting",
  "forgeerp-ai",
  "forgeerp-core",
  "forgeerp-events",
