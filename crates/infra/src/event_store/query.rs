@@ -80,7 +80,7 @@ pub struct EventQueryResult {
 ///
 /// This trait provides read-only query capabilities for inspecting events.
 /// All queries are tenant-scoped and paginated by default.
-#[allow(async_fn_in_trait)] // Fine for our use case - we control all implementations
+#[async_trait::async_trait]
 pub trait EventQuery: Send + Sync {
     /// Query events for a tenant with optional filters and pagination.
     ///

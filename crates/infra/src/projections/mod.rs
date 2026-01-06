@@ -7,6 +7,7 @@
 //! - **Idempotent**: Safe for at-least-once delivery
 
 pub mod cursor_store;
+pub mod replay;
 
 // Domain projections
 pub mod inventory_stock;
@@ -25,6 +26,7 @@ pub mod inventory_valuation;
 pub mod open_invoices;
 
 pub use cursor_store::{PostgresCursorStore, ProjectionCursorStore};
+pub use replay::{ReplayError, ReplayHandle, ReplayProgress, ReplayPhase, ApplyEnvelopeFn, ClearTenantFn};
 
 // Re-export ERP read models
 pub use customer_balances::{CustomerBalance, CustomerBalancesProjection, CustomerBalanceProjectionError};

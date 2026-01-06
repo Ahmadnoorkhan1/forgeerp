@@ -134,6 +134,7 @@ impl EventStore for InMemoryEventStore {
     }
 }
 
+#[async_trait::async_trait]
 impl EventQuery for InMemoryEventStore {
     async fn query_events(
         &self,

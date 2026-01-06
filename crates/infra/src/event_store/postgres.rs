@@ -659,6 +659,7 @@ impl EventStore for PostgresEventStore {
     }
 }
 
+#[async_trait::async_trait]
 impl EventQuery for PostgresEventStore {
     async fn query_events(
         &self,

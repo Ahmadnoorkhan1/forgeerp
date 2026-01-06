@@ -11,6 +11,7 @@ pub mod ledger;
 pub mod products;
 pub mod purchases;
 pub mod rbac;
+pub mod replay;
 pub mod sales;
 pub mod suppliers;
 pub mod system;
@@ -32,6 +33,7 @@ pub fn router() -> Router {
         .nest("/admin", admin::router())
         .nest("/admin/rbac", rbac::router())
         .nest("/admin/events", events::router())
+        .nest("/admin/replay", replay::router())
 }
 
 
