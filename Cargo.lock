@@ -1212,6 +1212,7 @@ dependencies = [
  "forgeerp-core",
  "forgeerp-events",
  "forgeerp-inventory",
+ "forgeerp-invoicing",
  "forgeerp-parties",
  "redis",
  "serde",
@@ -1231,6 +1232,19 @@ dependencies = [
  "chrono",
  "forgeerp-core",
  "forgeerp-events",
+ "proptest",
+ "serde",
+]
+
+[[package]]
+name = "forgeerp-invoicing"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "forgeerp-core",
+ "forgeerp-events",
+ "forgeerp-products",
+ "forgeerp-sales",
  "proptest",
  "serde",
 ]
