@@ -85,6 +85,16 @@ ForgeERP's first AI feature is **inventory anomaly detection**: it analyzes stoc
 - ✅ **Read model projection**: Fast stock queries via `InventoryStockProjection`
 - ✅ **REST API**: `POST /inventory/items`, `POST /inventory/items/{id}/adjust`, `GET /inventory/items/{id}`
 
+### Products Module
+
+- ✅ **Product aggregate**: Event-sourced product catalog management
+- ✅ **Product lifecycle**: Draft → Active → Archived status transitions
+- ✅ **SKU management**: SKU field with validation (uniqueness per tenant requires infrastructure support)
+- ✅ **Optional pricing metadata**: Base price and currency (no accounting integration yet)
+- ✅ **Business invariants**: Archived products cannot be activated or sold
+- ✅ **Commands**: CreateProduct, ActivateProduct, ArchiveProduct
+- ✅ **Events**: ProductCreated, ProductActivated, ProductArchived
+
 ### AI Features
 
 - ✅ **Inventory anomaly detection**: Background job that flags unusual stock movements
@@ -275,6 +285,7 @@ ForgeERP is a Cargo workspace with focused crates:
 - **`crates/auth`**: Authentication + authorization (JWT, RBAC)
 - **`crates/infra`**: Infrastructure adapters (event store, event bus, projections)
 - **`crates/inventory`**: First ERP module (Inventory domain)
+- **`crates/products`**: Products/Catalog module (Product domain)
 - **`crates/ai`**: Optional AI/ML subsystem (anomaly detection)
 - **`crates/api`**: HTTP gateway (Axum server)
 - **`crates/desktop`**: Optional desktop client foundation (Tauri)
