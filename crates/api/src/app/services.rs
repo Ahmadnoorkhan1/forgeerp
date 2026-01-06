@@ -9,6 +9,7 @@ use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use forgeerp_ai::AiResult;
 use forgeerp_core::{AggregateId, DomainError, TenantId};
 use forgeerp_events::{EventBus, EventEnvelope, InMemoryEventBus};
+use forgeerp_auth::UserId;
 use forgeerp_infra::{
     ai::{AiInsightSink, InventoryAnomalyRunner, InventoryAnomalyRunnerHandle},
     command_dispatcher::{CommandDispatcher, DispatchError},
@@ -22,6 +23,7 @@ use forgeerp_infra::{
         products::{ProductCatalogProjection, ProductReadModel},
         purchasing::{PurchaseOrderReadModel, PurchaseOrdersProjection},
         sales_orders::{SalesOrderReadModel, SalesOrdersProjection},
+        users::{EffectivePermissions, UserReadModel, UsersProjection},
     },
     read_model::InMemoryTenantStore,
 };
@@ -118,6 +120,7 @@ pub enum AppServices {
             PurchaseOrdersProjection<Arc<InMemoryTenantStore<forgeerp_purchasing::PurchaseOrderId, PurchaseOrderReadModel>>>,
         >,
         ledger_projection: Arc<AccountBalancesProjection<Arc<InMemoryTenantStore<String, AccountBalance>>>>,
+        users_projection: Arc<UsersProjection<Arc<InMemoryTenantStore<UserId, UserReadModel>>>>,
         default_ledger_id: AggregateId,
         ai_sink: Arc<ApiAiInsightSink>,
         realtime_tx: broadcast::Sender<RealtimeMessage>,
@@ -145,6 +148,7 @@ pub enum AppServices {
             PurchaseOrdersProjection<Arc<InMemoryTenantStore<forgeerp_purchasing::PurchaseOrderId, PurchaseOrderReadModel>>>,
         >,
         ledger_projection: Arc<AccountBalancesProjection<Arc<InMemoryTenantStore<String, AccountBalance>>>>,
+        users_projection: Arc<UsersProjection<Arc<InMemoryTenantStore<UserId, UserReadModel>>>>,
         default_ledger_id: AggregateId,
         ai_sink: Arc<ApiAiInsightSink>,
         realtime_tx: broadcast::Sender<RealtimeMessage>,
@@ -220,6 +224,9 @@ fn build_in_memory_services() -> AppServices {
     let ledger_projection: Arc<AccountBalancesProjection<_>> =
         Arc::new(AccountBalancesProjection::new(ledger_store));
 
+    let users_store: Arc<InMemoryTenantStore<UserId, UserReadModel>> = Arc::new(InMemoryTenantStore::new());
+    let users_projection: Arc<UsersProjection<_>> = Arc::new(UsersProjection::new(users_store));
+
     let default_ledger_id = AggregateId::new();
 
     // Realtime channel (SSE): lossy broadcast, tenant-filtered in handlers.
@@ -242,6 +249,7 @@ fn build_in_memory_services() -> AppServices {
         let ar_aging_projection = ar_aging_projection.clone();
         let purchases_projection = purchases_projection.clone();
         let ledger_projection = ledger_projection.clone();
+        let users_projection = users_projection.clone();
         let ai_sink = ai_sink.clone();
         let ai_runners = ai_runners.clone();
         let realtime_tx = realtime_tx.clone();
@@ -267,6 +275,7 @@ fn build_in_memory_services() -> AppServices {
                         }
                         "purchasing.order" => purchases_projection.apply_envelope(&env).map_err(|e| e.to_string()),
                         "accounting.ledger" => ledger_projection.apply_envelope(&env).map_err(|e| e.to_string()),
+                        "auth.user" => users_projection.apply_envelope(&env).map_err(|e| e.to_string()),
                         _ => Ok(()),
                     };
 
@@ -318,6 +327,7 @@ fn build_in_memory_services() -> AppServices {
         ar_aging_projection,
         purchases_projection,
         ledger_projection,
+        users_projection,
         default_ledger_id,
         ai_sink,
         realtime_tx,
@@ -383,6 +393,9 @@ async fn build_persistent_services() -> AppServices {
     let ledger_projection: Arc<AccountBalancesProjection<_>> =
         Arc::new(AccountBalancesProjection::new(ledger_store));
 
+    let users_store: Arc<InMemoryTenantStore<UserId, UserReadModel>> = Arc::new(InMemoryTenantStore::new());
+    let users_projection: Arc<UsersProjection<_>> = Arc::new(UsersProjection::new(users_store));
+
     let default_ledger_id = AggregateId::new();
 
     let (realtime_tx, _realtime_rx) = broadcast::channel::<RealtimeMessage>(256);
@@ -402,6 +415,7 @@ async fn build_persistent_services() -> AppServices {
         let ar_aging_projection = ar_aging_projection.clone();
         let purchases_projection = purchases_projection.clone();
         let ledger_projection = ledger_projection.clone();
+        let users_projection = users_projection.clone();
         let ai_sink = ai_sink.clone();
         let ai_runners = ai_runners.clone();
         let realtime_tx = realtime_tx.clone();
@@ -432,6 +446,7 @@ async fn build_persistent_services() -> AppServices {
                             }
                             "purchasing.order" => purchases_projection.apply_envelope(&env).map_err(|e| e.to_string()),
                             "accounting.ledger" => ledger_projection.apply_envelope(&env).map_err(|e| e.to_string()),
+                            "auth.user" => users_projection.apply_envelope(&env).map_err(|e| e.to_string()),
                             _ => Ok(()),
                         };
 
@@ -482,6 +497,7 @@ async fn build_persistent_services() -> AppServices {
         ar_aging_projection,
         purchases_projection,
         ledger_projection,
+        users_projection,
         default_ledger_id,
         ai_sink,
         realtime_tx,
@@ -678,6 +694,42 @@ impl AppServices {
             AppServices::InMemory { ledger_projection, .. } => ledger_projection.get(tenant_id, code),
             #[cfg(feature = "redis")]
             AppServices::Persistent { ledger_projection, .. } => ledger_projection.get(tenant_id, code),
+        }
+    }
+
+    pub fn users_get(&self, tenant_id: TenantId, user_id: &UserId) -> Option<UserReadModel> {
+        match self {
+            AppServices::InMemory { users_projection, .. } => users_projection.get(tenant_id, user_id),
+            #[cfg(feature = "redis")]
+            AppServices::Persistent { users_projection, .. } => users_projection.get(tenant_id, user_id),
+        }
+    }
+
+    pub fn users_list(&self, tenant_id: TenantId) -> Vec<UserReadModel> {
+        match self {
+            AppServices::InMemory { users_projection, .. } => users_projection.list(tenant_id),
+            #[cfg(feature = "redis")]
+            AppServices::Persistent { users_projection, .. } => users_projection.list(tenant_id),
+        }
+    }
+
+    pub fn users_effective_permissions<F>(
+        &self,
+        tenant_id: TenantId,
+        user_id: &UserId,
+        role_permissions: F,
+    ) -> Option<EffectivePermissions>
+    where
+        F: Fn(&str) -> Vec<String>,
+    {
+        match self {
+            AppServices::InMemory { users_projection, .. } => {
+                users_projection.effective_permissions(tenant_id, user_id, role_permissions)
+            }
+            #[cfg(feature = "redis")]
+            AppServices::Persistent { users_projection, .. } => {
+                users_projection.effective_permissions(tenant_id, user_id, role_permissions)
+            }
         }
     }
 }

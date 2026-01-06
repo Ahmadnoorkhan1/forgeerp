@@ -68,6 +68,18 @@
 - `POST /ledger/journal` → post journal entry
 - `GET /ledger/balances` / `GET /ledger/balances/{code}`
 
+### Admin - Identity Management
+- `POST /admin/users` → create a new user in the tenant
+- `GET /admin/users` → list all users in the tenant
+- `GET /admin/users/{id}` → get a specific user
+- `POST /admin/users/{id}/roles` → assign a role to a user
+- `DELETE /admin/users/{id}/roles/{role}` → revoke a role from a user
+- `POST /admin/users/{id}/suspend` → suspend a user
+- `POST /admin/users/{id}/activate` → activate a suspended user
+- `GET /admin/users/{id}/permissions` → inspect effective permissions for a user
+
+**Note:** Admin endpoints require specific permissions (`admin.users.*`) and enforce privilege escalation prevention - users cannot assign roles they don't have (unless they have the `admin` role).
+
 ## Authentication + tenant context propagation
 
 This crate implements an Axum middleware that:
@@ -150,6 +162,7 @@ api/src/
     dto.rs       # request DTOs + response JSON mapping helpers
     routes/      # one file per REST area
       mod.rs
+      common.rs    # shared auth helpers
       system.rs
       inventory.rs
       products.rs
@@ -160,6 +173,7 @@ api/src/
       purchases.rs
       ledger.rs
       ar.rs
+      admin.rs     # identity management
   authz.rs       # command-boundary authorization guard
   context.rs     # TenantContext / PrincipalContext
   middleware.rs  # auth middleware (Bearer JWT)

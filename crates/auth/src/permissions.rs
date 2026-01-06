@@ -31,4 +31,49 @@ impl core::fmt::Display for Permission {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin Permission Constants
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Permission constants for identity management operations.
+///
+/// These are intentionally stringent to prevent accidental privilege escalation.
+pub mod admin {
+    use super::Permission;
+
+    /// Permission to create new users within a tenant.
+    pub const USER_CREATE: Permission = Permission(std::borrow::Cow::Borrowed("admin.users.create"));
+
+    /// Permission to list users within a tenant.
+    pub const USER_LIST: Permission = Permission(std::borrow::Cow::Borrowed("admin.users.list"));
+
+    /// Permission to view a specific user's details.
+    pub const USER_READ: Permission = Permission(std::borrow::Cow::Borrowed("admin.users.read"));
+
+    /// Permission to assign roles to users.
+    pub const USER_ASSIGN_ROLE: Permission = Permission(std::borrow::Cow::Borrowed("admin.users.assign_role"));
+
+    /// Permission to revoke roles from users.
+    pub const USER_REVOKE_ROLE: Permission = Permission(std::borrow::Cow::Borrowed("admin.users.revoke_role"));
+
+    /// Permission to suspend users.
+    pub const USER_SUSPEND: Permission = Permission(std::borrow::Cow::Borrowed("admin.users.suspend"));
+
+    /// Permission to activate suspended users.
+    pub const USER_ACTIVATE: Permission = Permission(std::borrow::Cow::Borrowed("admin.users.activate"));
+
+    /// All admin user permissions (convenience for super-admin setup).
+    pub fn all_user_permissions() -> Vec<Permission> {
+        vec![
+            USER_CREATE.clone(),
+            USER_LIST.clone(),
+            USER_READ.clone(),
+            USER_ASSIGN_ROLE.clone(),
+            USER_REVOKE_ROLE.clone(),
+            USER_SUSPEND.clone(),
+            USER_ACTIVATE.clone(),
+        ]
+    }
+}
+
 

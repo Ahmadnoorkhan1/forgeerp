@@ -1176,7 +1176,9 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "forgeerp-core",
+ "forgeerp-events",
  "jsonwebtoken",
+ "proptest",
  "serde",
  "thiserror 1.0.69",
  "uuid",
@@ -1228,6 +1230,7 @@ dependencies = [
  "criterion",
  "forgeerp-accounting",
  "forgeerp-ai",
+ "forgeerp-auth",
  "forgeerp-core",
  "forgeerp-events",
  "forgeerp-inventory",

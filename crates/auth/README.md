@@ -43,6 +43,33 @@ The API layer should enforce required permissions **before** dispatching command
 `Permission("*")` is treated as **allow-all** for the current tenant context. This is useful for
 admin/service roles without enumerating every permission in tokens.
 
+### User Aggregate (event-sourced identity management)
+
+This crate includes a `User` aggregate for managing user identities within tenants:
+
+#### Commands
+- `CreateUser` - create a new user with email, display name, and initial roles
+- `AssignRole` - assign a role to a user (with privilege escalation check)
+- `RevokeRole` - revoke a role from a user
+- `SuspendUser` - suspend a user (prevents authentication and role changes)
+- `ActivateUser` - reactivate a suspended user
+
+#### Events
+- `UserCreated`, `RoleAssigned`, `RoleRevoked`, `UserSuspended`, `UserActivated`
+
+#### Invariants
+- **Tenant isolation**: Users belong to exactly one tenant
+- **No privilege escalation**: Users cannot assign roles they don't have (unless admin)
+- **Suspended users**: Cannot have roles assigned while suspended
+
+### Admin Permission Constants
+
+The `permissions::admin` module provides standardized permission constants for identity management:
+
+- `admin.users.create`, `admin.users.list`, `admin.users.read`
+- `admin.users.assign_role`, `admin.users.revoke_role`
+- `admin.users.suspend`, `admin.users.activate`
+
 ## Module map
 
 ```
@@ -50,9 +77,10 @@ auth/src/
   lib.rs
   principal.rs    # PrincipalId, TenantMembership
   roles.rs        # Role
-  permissions.rs  # Permission
+  permissions.rs  # Permission + admin permission constants
   claims.rs       # JwtClaims + validate_claims
   authorize.rs    # authorize(...)
+  user.rs         # User aggregate (event-sourced)
 ```
 
 
