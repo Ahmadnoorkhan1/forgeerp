@@ -68,6 +68,38 @@
 - `POST /ledger/journal` → post journal entry
 - `GET /ledger/balances` / `GET /ledger/balances/{code}`
 
+### Admin - Identity Management
+- `POST /admin/users` → create a new user in the tenant
+- `GET /admin/users` → list all users in the tenant
+- `GET /admin/users/{id}` → get a specific user
+- `POST /admin/users/{id}/roles` → assign a role to a user
+- `DELETE /admin/users/{id}/roles/{role}` → revoke a role from a user
+- `POST /admin/users/{id}/suspend` → suspend a user
+- `POST /admin/users/{id}/activate` → activate a suspended user
+- `GET /admin/users/{id}/permissions` → inspect effective permissions for a user
+
+**Note:** Admin endpoints require specific permissions (`admin.users.*`) and enforce privilege escalation prevention - users cannot assign roles they don't have (unless they have the `admin` role).
+
+### Admin - RBAC Audit & Debugging
+- `GET /admin/rbac/roles` → list all available roles and their permissions
+- `GET /admin/rbac/roles/{name}` → get details about a specific role
+- `GET /admin/rbac/permissions` → list all available permissions with descriptions
+- `GET /admin/rbac/permissions/{name}` → get details about a specific permission
+- `GET /admin/rbac/explain?permission=X` → explain why the current user can/cannot access a permission
+- `GET /admin/rbac/explain/{user_id}?permission=X` → explain why a specific user can/cannot access a permission
+
+**Authorization Explanation:** The `/admin/rbac/explain` endpoints provide detailed, transparent explanations of authorization decisions, answering "Why was this request denied?" with:
+- Whether access was granted or denied
+- Detailed reason for the decision
+- Principal's current roles and permissions
+- Suggestions for fixing denial (if applicable)
+
+**Use Cases:**
+- Debug "403 Forbidden" errors by understanding exactly why access was denied
+- Audit what permissions a user has and where they come from
+- Verify role-permission mappings
+- Provide self-service permission checks for users
+
 ## Authentication + tenant context propagation
 
 This crate implements an Axum middleware that:
@@ -150,6 +182,7 @@ api/src/
     dto.rs       # request DTOs + response JSON mapping helpers
     routes/      # one file per REST area
       mod.rs
+      common.rs    # shared auth helpers
       system.rs
       inventory.rs
       products.rs
@@ -160,6 +193,8 @@ api/src/
       purchases.rs
       ledger.rs
       ar.rs
+      admin.rs     # identity management
+      rbac.rs      # RBAC audit & authorization explanation
   authz.rs       # command-boundary authorization guard
   context.rs     # TenantContext / PrincipalContext
   middleware.rs  # auth middleware (Bearer JWT)

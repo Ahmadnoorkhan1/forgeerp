@@ -34,16 +34,23 @@ pub fn authorize_command<C: CommandAuthorization>(
     Ok(())
 }
 
-/// Minimal role→permission mapping stub.
+/// Map roles to their granted permissions using the default role-permission mapping.
 ///
-/// This is intentionally simple until a real policy source exists (e.g. DB-backed).
-fn permissions_from_roles(roles: &[forgeerp_auth::Role]) -> Vec<Permission> {
-    // Convention: "admin" grants all permissions in the current tenant.
-    if roles.iter().any(|r| r.as_str() == "admin") {
-        return vec![Permission::new("*")];
+/// This function uses the default role-to-permission mapping from the infra projections.
+pub fn permissions_from_roles(roles: &[forgeerp_auth::Role]) -> Vec<Permission> {
+    use forgeerp_infra::projections::default_role_permissions;
+    use std::collections::HashSet;
+
+    let mut all_permissions: HashSet<String> = HashSet::new();
+
+    for role in roles {
+        let role_perms = default_role_permissions(role.as_str());
+        for perm in role_perms {
+            all_permissions.insert(perm);
+        }
     }
 
-    Vec::new()
+    all_permissions.into_iter().map(Permission::new).collect()
 }
 
 

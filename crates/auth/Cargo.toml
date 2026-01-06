@@ -8,10 +8,14 @@ path = "src/lib.rs"
 
 [dependencies]
 forgeerp-core = { path = "../core" }
+forgeerp-events = { path = "../events" }
 serde = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 jsonwebtoken = "9"
+
+[dev-dependencies]
+proptest = { workspace = true }
 
 

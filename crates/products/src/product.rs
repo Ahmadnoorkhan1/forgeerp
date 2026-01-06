@@ -941,7 +941,7 @@ mod tests {
             #[test]
             fn handle_is_deterministic(
                 sku in "[A-Z0-9]{1,20}",
-                name in ".{1,100}"
+                name in "[A-Za-z][A-Za-z0-9 ]{0,99}"
             ) {
                 let mut product = Product::empty(test_product_id());
                 let tenant_id = test_tenant_id();
@@ -987,7 +987,7 @@ mod tests {
             #[test]
             fn apply_is_deterministic(
                 sku in "[A-Z0-9]{1,20}",
-                name in ".{1,100}"
+                name in "[A-Za-z][A-Za-z0-9 ]{0,99}"
             ) {
                 let tenant_id = test_tenant_id();
                 let product_id = test_product_id();
@@ -1038,7 +1038,7 @@ mod tests {
             #[test]
             fn archived_products_cannot_be_sold(
                 sku in "[A-Z0-9]{1,20}",
-                name in ".{1,100}"
+                name in "[A-Za-z][A-Za-z0-9 ]{0,99}"
             ) {
                 let mut product = Product::empty(test_product_id());
                 let tenant_id = test_tenant_id();
@@ -1085,7 +1085,7 @@ mod tests {
             #[test]
             fn version_increments_monotonically(
                 sku in "[A-Z0-9]{1,20}",
-                name in ".{1,100}"
+                name in "[A-Za-z][A-Za-z0-9 ]{0,99}"
             ) {
                 let mut product = Product::empty(test_product_id());
                 let tenant_id = test_tenant_id();

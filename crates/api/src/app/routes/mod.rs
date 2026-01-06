@@ -1,5 +1,6 @@
 use axum::{routing::get, Router};
 
+pub mod admin;
 pub mod ar;
 pub mod common;
 pub mod customers;
@@ -8,6 +9,7 @@ pub mod invoices;
 pub mod ledger;
 pub mod products;
 pub mod purchases;
+pub mod rbac;
 pub mod sales;
 pub mod suppliers;
 pub mod system;
@@ -26,6 +28,8 @@ pub fn router() -> Router {
         .nest("/purchases", purchases::router())
         .nest("/ledger", ledger::router())
         .nest("/ar", ar::router())
+        .nest("/admin", admin::router())
+        .nest("/admin/rbac", rbac::router())
 }
 
 

@@ -20,6 +20,7 @@ forgeerp-accounting = { path = "../accounting" }
 forgeerp-products = { path = "../products" }
 forgeerp-sales = { path = "../sales" }
 forgeerp-purchasing = { path = "../purchasing" }
+forgeerp-auth = { path = "../auth" }
 forgeerp-ai = { path = "../ai" }
 serde = { workspace = true }
 serde_json = { workspace = true }
