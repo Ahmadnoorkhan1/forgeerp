@@ -5,13 +5,8 @@ pub mod context;
 pub mod middleware;
 pub mod authz;
 
-/// HTTP server bootstrap and runtime wiring (no framework specifics yet).
-pub mod server {}
-
-/// Routing tree and handler wiring (framework-specific code will live here later).
-pub mod routes {}
-
-/// Request/response DTOs and mapping to/from domain types.
-pub mod mapping {}
+// Note: the real “routing” and “mapping” modules live under `app/` for now:
+// - `app/routes/*`: one file per REST area
+// - `app/dto.rs`: request/response mapping helpers
 
 

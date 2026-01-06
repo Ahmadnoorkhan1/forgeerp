@@ -6,7 +6,7 @@
 pub mod order;
 
 pub use order::{
-    AddLine, CreateSalesOrder, LineAdded, MarkInvoiced, OrderConfirmed, SalesOrder,
+    AddLine, ConfirmOrder, CreateSalesOrder, LineAdded, MarkInvoiced, OrderConfirmed, SalesOrder,
     SalesOrderCommand, SalesOrderCreated, SalesOrderEvent, SalesOrderId, SalesOrderStatus,
 };
 

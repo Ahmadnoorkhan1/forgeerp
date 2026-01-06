@@ -6,23 +6,22 @@ use thiserror::Error;
 
 use forgeerp_core::{AggregateId, TenantId};
 use forgeerp_events::EventEnvelope;
-use forgeerp_accounting::{AccountKind, LedgerEvent};
+use forgeerp_products::{ProductEvent, ProductId, ProductStatus};
+use forgeerp_products::product::PricingMetadata;
 
 use crate::projections::cursor_store::ProjectionCursorStore;
 use crate::read_model::TenantStore;
 
-/// Read model: per-account balance for a tenant.
-///
-/// Balances are signed (debit-positive convention).
-#[derive(Debug, Clone, PartialEq)]
-pub struct AccountBalance {
-    pub account_code: String,
-    pub account_name: String,
-    pub kind: AccountKind,
-    pub balance: i128,
+/// Queryable product read model (catalog).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductReadModel {
+    pub product_id: ProductId,
+    pub sku: String,
+    pub name: String,
+    pub status: ProductStatus,
+    pub pricing: PricingMetadata,
 }
 
-/// Tenant+aggregate cursor for idempotent projection.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 struct CursorKey {
     tenant_id: TenantId,
@@ -30,8 +29,8 @@ struct CursorKey {
 }
 
 #[derive(Debug, Error)]
-pub enum AccountingProjectionError {
-    #[error("failed to deserialize accounting event: {0}")]
+pub enum ProductProjectionError {
+    #[error("failed to deserialize product event: {0}")]
     Deserialize(String),
 
     #[error("tenant isolation violation: {0}")]
@@ -41,11 +40,10 @@ pub enum AccountingProjectionError {
     NonMonotonicSequence { last: u64, found: u64 },
 }
 
-/// Projection: ledger → account balances per tenant.
 #[derive(Debug)]
-pub struct AccountBalancesProjection<S, C = InMemoryCursorStore>
+pub struct ProductCatalogProjection<S, C = InMemoryCursorStore>
 where
-    S: TenantStore<String, AccountBalance>,
+    S: TenantStore<ProductId, ProductReadModel>,
 {
     store: S,
     cursors: RwLock<HashMap<CursorKey, u64>>,
@@ -53,7 +51,6 @@ where
     projection_name: String,
 }
 
-/// In-memory cursor store (no persistence).
 pub struct InMemoryCursorStore;
 
 impl ProjectionCursorStore for InMemoryCursorStore {
@@ -73,38 +70,35 @@ impl ProjectionCursorStore for InMemoryCursorStore {
         _projection_name: &str,
         _sequence_number: u64,
     ) {
-        // no-op
     }
 
-    fn clear_cursors(&self, _tenant_id: TenantId, _projection_name: &str) {
-        // no-op
-    }
+    fn clear_cursors(&self, _tenant_id: TenantId, _projection_name: &str) {}
 }
 
-impl<S> AccountBalancesProjection<S>
+impl<S> ProductCatalogProjection<S>
 where
-    S: TenantStore<String, AccountBalance>,
+    S: TenantStore<ProductId, ProductReadModel>,
 {
     pub fn new(store: S) -> Self {
         Self {
             store,
             cursors: RwLock::new(HashMap::new()),
             cursor_store: None,
-            projection_name: "accounting.balances".to_string(),
+            projection_name: "products.catalog".to_string(),
         }
     }
 }
 
-impl<S> AccountBalancesProjection<S>
+impl<S> ProductCatalogProjection<S>
 where
-    S: TenantStore<String, AccountBalance>,
+    S: TenantStore<ProductId, ProductReadModel>,
 {
     pub fn with_persistent_cursors<C: ProjectionCursorStore + 'static>(
         self,
         cursor_store: Arc<C>,
         projection_name: impl Into<String>,
-    ) -> AccountBalancesProjection<S, C> {
-        AccountBalancesProjection {
+    ) -> ProductCatalogProjection<S, C> {
+        ProductCatalogProjection {
             store: self.store,
             cursors: RwLock::new(HashMap::new()),
             cursor_store: Some(cursor_store),
@@ -113,16 +107,9 @@ where
     }
 }
 
-impl<S, C> AccountBalancesProjection<S, C>
+impl<S, C> ProductCatalogProjection<S, C>
 where
-    S: TenantStore<String, AccountBalance>,
-    C: ProjectionCursorStore + 'static,
-{
-}
-
-impl<S, C> AccountBalancesProjection<S, C>
-where
-    S: TenantStore<String, AccountBalance>,
+    S: TenantStore<ProductId, ProductReadModel>,
     C: ProjectionCursorStore + 'static,
 {
     fn get_cursor(&self, tenant_id: TenantId, aggregate_id: AggregateId) -> u64 {
@@ -144,14 +131,8 @@ where
         if let Ok(mut cursors) = self.cursors.write() {
             cursors.insert(CursorKey { tenant_id, aggregate_id }, sequence_number);
         }
-
         if let Some(ref cursor_store) = self.cursor_store {
-            cursor_store.update_cursor(
-                tenant_id,
-                aggregate_id,
-                &self.projection_name,
-                sequence_number,
-            );
+            cursor_store.update_cursor(tenant_id, aggregate_id, &self.projection_name, sequence_number);
         }
     }
 
@@ -159,27 +140,24 @@ where
         if let Ok(mut cursors) = self.cursors.write() {
             cursors.retain(|k, _| k.tenant_id != tenant_id);
         }
-
         if let Some(ref cursor_store) = self.cursor_store {
             cursor_store.clear_cursors(tenant_id, &self.projection_name);
         }
     }
 
-    /// Get balance for a specific account code.
-    pub fn get(&self, tenant_id: TenantId, code: &str) -> Option<AccountBalance> {
-        self.store.get(tenant_id, &code.to_string())
+    pub fn get(&self, tenant_id: TenantId, product_id: &ProductId) -> Option<ProductReadModel> {
+        self.store.get(tenant_id, product_id)
     }
 
-    /// List all balances for a tenant.
-    pub fn list(&self, tenant_id: TenantId) -> Vec<AccountBalance> {
+    pub fn list(&self, tenant_id: TenantId) -> Vec<ProductReadModel> {
         self.store.list(tenant_id)
     }
 
     pub fn apply_envelope(
         &self,
         envelope: &EventEnvelope<JsonValue>,
-    ) -> Result<(), AccountingProjectionError> {
-        if envelope.aggregate_type() != "accounting.ledger" {
+    ) -> Result<(), ProductProjectionError> {
+        if envelope.aggregate_type() != "products.product" {
             return Ok(());
         }
 
@@ -188,53 +166,72 @@ where
         let seq = envelope.sequence_number();
 
         let last = self.get_cursor(tenant_id, aggregate_id);
-
         if seq == 0 {
-            return Err(AccountingProjectionError::NonMonotonicSequence { last, found: seq });
+            return Err(ProductProjectionError::NonMonotonicSequence { last, found: seq });
         }
-
         if seq <= last {
             return Ok(());
         }
-
         if seq != last + 1 && last != 0 {
-            return Err(AccountingProjectionError::NonMonotonicSequence { last, found: seq });
+            return Err(ProductProjectionError::NonMonotonicSequence { last, found: seq });
         }
 
-        let ev: LedgerEvent = serde_json::from_value(envelope.payload().clone())
-            .map_err(|e| AccountingProjectionError::Deserialize(e.to_string()))?;
+        let ev: ProductEvent = serde_json::from_value(envelope.payload().clone())
+            .map_err(|e| ProductProjectionError::Deserialize(e.to_string()))?;
 
-        let event_tenant = match &ev {
-            LedgerEvent::JournalEntryPosted(e) => e.tenant_id,
+        let (event_tenant, product_id) = match &ev {
+            ProductEvent::ProductCreated(e) => (e.tenant_id, e.product_id),
+            ProductEvent::ProductActivated(e) => (e.tenant_id, e.product_id),
+            ProductEvent::ProductArchived(e) => (e.tenant_id, e.product_id),
         };
 
         if event_tenant != tenant_id {
-            return Err(AccountingProjectionError::TenantIsolation(
+            return Err(ProductProjectionError::TenantIsolation(
                 "event tenant_id does not match envelope tenant_id".to_string(),
             ));
         }
+        if product_id.0 != aggregate_id {
+            return Err(ProductProjectionError::TenantIsolation(
+                "event product_id does not match envelope aggregate_id".to_string(),
+            ));
+        }
 
-        let LedgerEvent::JournalEntryPosted(e) = ev;
-        for line in &e.lines {
-            let code = line.account.code.clone();
-            let mut rm = self
-                .store
-                .get(tenant_id, &code)
-                .unwrap_or(AccountBalance {
-                    account_code: code.clone(),
-                    account_name: line.account.name.clone(),
-                    kind: line.account.kind,
-                    balance: 0,
+        match ev {
+            ProductEvent::ProductCreated(e) => {
+                self.store.upsert(
+                    tenant_id,
+                    e.product_id,
+                    ProductReadModel {
+                        product_id: e.product_id,
+                        sku: e.sku,
+                        name: e.name,
+                        status: ProductStatus::Draft,
+                        pricing: e.pricing,
+                    },
+                );
+            }
+            ProductEvent::ProductActivated(e) => {
+                let mut rm = self.store.get(tenant_id, &e.product_id).unwrap_or(ProductReadModel {
+                    product_id: e.product_id,
+                    sku: String::new(),
+                    name: String::new(),
+                    status: ProductStatus::Draft,
+                    pricing: PricingMetadata::default(),
                 });
-
-            // Debit positive, credit negative.
-            let delta: i128 = if line.is_debit {
-                line.amount as i128
-            } else {
-                -(line.amount as i128)
-            };
-            rm.balance += delta;
-            self.store.upsert(tenant_id, code.clone(), rm);
+                rm.status = ProductStatus::Active;
+                self.store.upsert(tenant_id, e.product_id, rm);
+            }
+            ProductEvent::ProductArchived(e) => {
+                let mut rm = self.store.get(tenant_id, &e.product_id).unwrap_or(ProductReadModel {
+                    product_id: e.product_id,
+                    sku: String::new(),
+                    name: String::new(),
+                    status: ProductStatus::Draft,
+                    pricing: PricingMetadata::default(),
+                });
+                rm.status = ProductStatus::Archived;
+                self.store.upsert(tenant_id, e.product_id, rm);
+            }
         }
 
         self.update_cursor(tenant_id, aggregate_id, seq);
@@ -244,7 +241,7 @@ where
     pub fn rebuild_from_scratch(
         &self,
         envelopes: impl IntoIterator<Item = EventEnvelope<JsonValue>>,
-    ) -> Result<(), AccountingProjectionError> {
+    ) -> Result<(), ProductProjectionError> {
         let mut envs: Vec<_> = envelopes.into_iter().collect();
 
         {
@@ -268,7 +265,6 @@ where
         for env in &envs {
             self.apply_envelope(env)?;
         }
-
         Ok(())
     }
 }

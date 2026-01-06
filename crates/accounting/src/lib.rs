@@ -6,7 +6,7 @@ pub mod ledger;
 
 pub use ledger::{
     Account, AccountKind, JournalCommand, JournalEntryLine, JournalEntryPosted, Ledger,
-    LedgerEvent, LedgerId, LedgerError, PostJournalEntry,
+    LedgerEvent, LedgerId, PostJournalEntry,
 };
 
 

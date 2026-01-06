@@ -6,9 +6,9 @@
 pub mod order;
 
 pub use order::{
-    Approve, CreatePurchaseOrder, GoodsReceived, LineItem, PurchaseOrder, PurchaseOrderApproved,
-    PurchaseOrderCommand, PurchaseOrderCreated, PurchaseOrderEvent, PurchaseOrderId,
-    PurchaseOrderStatus, ReceiveGoods,
+    AddLine, Approve, CreatePurchaseOrder, GoodsReceived, LineItem, PurchaseOrder,
+    PurchaseOrderApproved, PurchaseOrderCommand, PurchaseOrderCreated, PurchaseOrderEvent,
+    PurchaseOrderId, PurchaseOrderLineAdded, PurchaseOrderStatus, ReceiveGoods,
 };
 
 
