@@ -30,6 +30,12 @@ forgeerp-core = { path = "../core" }
 forgeerp-infra = { path = "../infra", features = ["redis"] }
 sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls", "uuid", "chrono", "json"], default-features = false }
 forgeerp-inventory = { path = "../inventory" }
+forgeerp-products = { path = "../products" }
+forgeerp-parties = { path = "../parties" }
+forgeerp-sales = { path = "../sales" }
+forgeerp-invoicing = { path = "../invoicing" }
+forgeerp-purchasing = { path = "../purchasing" }
+forgeerp-accounting = { path = "../accounting" }
 forgeerp-events = { path = "../events" }
 forgeerp-ai = { path = "../ai" }
 

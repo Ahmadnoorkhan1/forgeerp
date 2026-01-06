@@ -29,6 +29,45 @@
   - Tenant-scoped: a client only receives events for its authenticated tenant
   - Lossy / no backpressure: slow clients may miss events; core workflows are never blocked
 
+### Products
+- `POST /products` → create product
+- `POST /products/{id}/activate`
+- `POST /products/{id}/archive`
+- `GET /products/{id}`
+- `GET /products`
+
+### Customers / Suppliers
+- `POST /customers` / `POST /suppliers` → register
+- `PATCH /customers/{id}` / `PATCH /suppliers/{id}` → update details
+- `POST /customers/{id}/suspend` / `POST /suppliers/{id}/suspend`
+- `GET /customers` / `GET /suppliers`
+- `GET /customers/{id}` / `GET /suppliers/{id}`
+
+### Sales Orders
+- `POST /sales/orders` → create order
+- `POST /sales/orders/{id}/lines` → add line
+- `POST /sales/orders/{id}/confirm`
+- `POST /sales/orders/{id}/mark-invoiced`
+- `GET /sales/orders` / `GET /sales/orders/{id}`
+
+### Invoices + AR aging
+- `POST /invoices` → issue invoice
+- `POST /invoices/{id}/payments`
+- `POST /invoices/{id}/void`
+- `GET /invoices` / `GET /invoices/{id}`
+- `GET /ar/aging`
+
+### Purchases
+- `POST /purchases/orders` → create purchase order (with lines)
+- `POST /purchases/orders/{id}/lines`
+- `POST /purchases/orders/{id}/approve`
+- `POST /purchases/orders/{id}/receive`
+- `GET /purchases/orders` / `GET /purchases/orders/{id}`
+
+### Ledger views
+- `POST /ledger/journal` → post journal entry
+- `GET /ledger/balances` / `GET /ledger/balances/{code}`
+
 ## Authentication + tenant context propagation
 
 This crate implements an Axum middleware that:
@@ -85,8 +124,8 @@ Common status codes:
 The SSE endpoint streams messages **derived from projections and AI insight availability** (not commands).
 
 Event types currently emitted:
-- `inventory.projection_updated`
-  - Emitted after a successful projection apply
+- `{aggregate_type}.projection_updated`
+  - Emitted after a successful projection apply (e.g. `inventory.item.projection_updated`)
 - `ai.insight_available`
   - Emitted when new AI insights are stored/available
 
@@ -102,8 +141,25 @@ Each event is sent with:
 
 ```
 api/src/
-  main.rs        # server + route wiring
+  main.rs        # server bootstrap (bind + serve)
   lib.rs
+  app/           # router construction + handler modules (see below)
+    mod.rs       # build_app()
+    services.rs  # event store/bus/dispatcher/projection wiring
+    errors.rs    # JSON error responses + DispatchError mapping
+    dto.rs       # request DTOs + response JSON mapping helpers
+    routes/      # one file per REST area
+      mod.rs
+      system.rs
+      inventory.rs
+      products.rs
+      customers.rs
+      suppliers.rs
+      sales.rs
+      invoices.rs
+      purchases.rs
+      ledger.rs
+      ar.rs
   authz.rs       # command-boundary authorization guard
   context.rs     # TenantContext / PrincipalContext
   middleware.rs  # auth middleware (Bearer JWT)

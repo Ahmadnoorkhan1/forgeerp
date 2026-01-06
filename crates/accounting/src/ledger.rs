@@ -144,22 +144,10 @@ impl Event for LedgerEvent {
     }
 }
 
-/// Ledger-level error wrapper (for potential future extension).
-#[derive(Debug)]
-pub enum LedgerError {
-    Domain(DomainError),
-}
-
-impl From<DomainError> for LedgerError {
-    fn from(e: DomainError) -> Self {
-        LedgerError::Domain(e)
-    }
-}
-
 impl Aggregate for Ledger {
     type Command = JournalCommand;
     type Event = LedgerEvent;
-    type Error = LedgerError;
+    type Error = DomainError;
 
     fn apply(&mut self, event: &Self::Event) {
         match event {
@@ -193,11 +181,11 @@ impl Ledger {
         Ok(())
     }
 
-    fn handle_post(&self, cmd: &PostJournalEntry) -> Result<Vec<LedgerEvent>, LedgerError> {
+    fn handle_post(&self, cmd: &PostJournalEntry) -> Result<Vec<LedgerEvent>, DomainError> {
         self.ensure_tenant(cmd.tenant_id)?;
 
         if cmd.lines.is_empty() {
-            return Err(DomainError::validation("journal entry must have lines").into());
+            return Err(DomainError::validation("journal entry must have lines"));
         }
 
         let mut debit_total: i128 = 0;
@@ -205,7 +193,7 @@ impl Ledger {
 
         for line in &cmd.lines {
             if line.amount <= 0 {
-                return Err(DomainError::validation("amount must be positive").into());
+                return Err(DomainError::validation("amount must be positive"));
             }
             if line.is_debit {
                 debit_total += line.amount as i128;
@@ -215,7 +203,7 @@ impl Ledger {
         }
 
         if debit_total != credit_total {
-            return Err(DomainError::invariant("debits must equal credits").into());
+            return Err(DomainError::invariant("debits must equal credits"));
         }
 
         Ok(vec![LedgerEvent::JournalEntryPosted(JournalEntryPosted {
@@ -323,12 +311,9 @@ mod tests {
             description: None,
         };
 
-        let err = ledger
-            .handle(&JournalCommand::PostJournalEntry(cmd))
-            .unwrap_err();
+        let err = ledger.handle(&JournalCommand::PostJournalEntry(cmd)).unwrap_err();
         match err {
-            LedgerError::Domain(DomainError::InvariantViolation(msg))
-                if msg.contains("debits must equal credits") => {}
+            DomainError::InvariantViolation(msg) if msg.contains("debits must equal credits") => {}
             _ => panic!("Expected invariant violation for unbalanced entry"),
         }
     }
@@ -385,13 +370,12 @@ mod tests {
             // Compute sum of debits - credits from all events.
             let mut total: i128 = 0;
             for ev in &all_events {
-                if let LedgerEvent::JournalEntryPosted(je) = ev {
-                    for line in &je.lines {
-                        if line.is_debit {
-                            total += line.amount as i128;
-                        } else {
-                            total -= line.amount as i128;
-                        }
+                let LedgerEvent::JournalEntryPosted(je) = ev;
+                for line in &je.lines {
+                    if line.is_debit {
+                        total += line.amount as i128;
+                    } else {
+                        total -= line.amount as i128;
                     }
                 }
             }

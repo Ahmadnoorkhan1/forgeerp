@@ -117,6 +117,16 @@ pub struct Approve {
     pub occurred_at: DateTime<Utc>,
 }
 
+/// Command: AddLine (only allowed in Draft).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddLine {
+    pub tenant_id: TenantId,
+    pub order_id: PurchaseOrderId,
+    pub product_id: ProductId,
+    pub quantity: i64,
+    pub occurred_at: DateTime<Utc>,
+}
+
 /// Command: ReceiveGoods.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReceiveGoods {
@@ -128,6 +138,7 @@ pub struct ReceiveGoods {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PurchaseOrderCommand {
     CreatePurchaseOrder(CreatePurchaseOrder),
+    AddLine(AddLine),
     Approve(Approve),
     ReceiveGoods(ReceiveGoods),
 }
@@ -149,6 +160,17 @@ pub struct PurchaseOrderApproved {
     pub occurred_at: DateTime<Utc>,
 }
 
+/// Event: PurchaseOrderLineAdded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PurchaseOrderLineAdded {
+    pub tenant_id: TenantId,
+    pub order_id: PurchaseOrderId,
+    pub line_no: u32,
+    pub product_id: ProductId,
+    pub quantity: i64,
+    pub occurred_at: DateTime<Utc>,
+}
+
 /// Event: GoodsReceived.
 ///
 /// This event integrates with inventory by carrying the product and quantity
@@ -166,6 +188,7 @@ pub struct GoodsReceived {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PurchaseOrderEvent {
     PurchaseOrderCreated(PurchaseOrderCreated),
+    PurchaseOrderLineAdded(PurchaseOrderLineAdded),
     PurchaseOrderApproved(PurchaseOrderApproved),
     GoodsReceived(GoodsReceived),
 }
@@ -174,6 +197,7 @@ impl Event for PurchaseOrderEvent {
     fn event_type(&self) -> &'static str {
         match self {
             PurchaseOrderEvent::PurchaseOrderCreated(_) => "purchasing.order.created",
+            PurchaseOrderEvent::PurchaseOrderLineAdded(_) => "purchasing.order.line_added",
             PurchaseOrderEvent::PurchaseOrderApproved(_) => "purchasing.order.approved",
             PurchaseOrderEvent::GoodsReceived(_) => "purchasing.order.goods_received",
         }
@@ -186,6 +210,7 @@ impl Event for PurchaseOrderEvent {
     fn occurred_at(&self) -> DateTime<Utc> {
         match self {
             PurchaseOrderEvent::PurchaseOrderCreated(e) => e.occurred_at,
+            PurchaseOrderEvent::PurchaseOrderLineAdded(e) => e.occurred_at,
             PurchaseOrderEvent::PurchaseOrderApproved(e) => e.occurred_at,
             PurchaseOrderEvent::GoodsReceived(e) => e.occurred_at,
         }
@@ -207,6 +232,13 @@ impl Aggregate for PurchaseOrder {
                 self.lines.clear();
                 self.created = true;
             }
+            PurchaseOrderEvent::PurchaseOrderLineAdded(e) => {
+                self.lines.push(LineItem {
+                    line_no: e.line_no,
+                    product_id: e.product_id,
+                    quantity: e.quantity,
+                });
+            }
             PurchaseOrderEvent::PurchaseOrderApproved(_) => {
                 self.status = PurchaseOrderStatus::Approved;
             }
@@ -224,6 +256,7 @@ impl Aggregate for PurchaseOrder {
     fn handle(&self, command: &Self::Command) -> Result<Vec<Self::Event>, Self::Error> {
         match command {
             PurchaseOrderCommand::CreatePurchaseOrder(cmd) => self.handle_create(cmd),
+            PurchaseOrderCommand::AddLine(cmd) => self.handle_add_line(cmd),
             PurchaseOrderCommand::Approve(cmd) => self.handle_approve(cmd),
             PurchaseOrderCommand::ReceiveGoods(cmd) => self.handle_receive(cmd),
         }
@@ -279,10 +312,46 @@ impl PurchaseOrder {
             ));
         }
 
+        if self.lines.is_empty() {
+            return Err(DomainError::validation(
+                "cannot approve purchase order without lines",
+            ));
+        }
+
         Ok(vec![PurchaseOrderEvent::PurchaseOrderApproved(
             PurchaseOrderApproved {
                 tenant_id: cmd.tenant_id,
                 order_id: cmd.order_id,
+                occurred_at: cmd.occurred_at,
+            },
+        )])
+    }
+
+    fn handle_add_line(&self, cmd: &AddLine) -> Result<Vec<PurchaseOrderEvent>, DomainError> {
+        if !self.created {
+            return Err(DomainError::not_found());
+        }
+        self.ensure_tenant(cmd.tenant_id)?;
+        self.ensure_order_id(cmd.order_id)?;
+
+        if self.status != PurchaseOrderStatus::Draft {
+            return Err(DomainError::invariant(
+                "cannot modify purchase order once approved or received",
+            ));
+        }
+
+        if cmd.quantity <= 0 {
+            return Err(DomainError::validation("quantity must be positive"));
+        }
+
+        let next_line_no = (self.lines.len() as u32) + 1;
+        Ok(vec![PurchaseOrderEvent::PurchaseOrderLineAdded(
+            PurchaseOrderLineAdded {
+                tenant_id: cmd.tenant_id,
+                order_id: cmd.order_id,
+                line_no: next_line_no,
+                product_id: cmd.product_id,
+                quantity: cmd.quantity,
                 occurred_at: cmd.occurred_at,
             },
         )])
@@ -350,14 +419,6 @@ mod tests {
         Utc::now()
     }
 
-    fn default_line(product_id: ProductId) -> LineItem {
-        LineItem {
-            line_no: 1,
-            product_id,
-            quantity: 10,
-        }
-    }
-
     #[test]
     fn create_purchase_order_emits_purchase_order_created_event() {
         let order = PurchaseOrder::empty(test_order_id());
@@ -406,8 +467,18 @@ mod tests {
         order.apply(&events[0]);
         assert_eq!(order.status(), PurchaseOrderStatus::Draft);
 
-        // Inject a default line so receive is valid later.
-        order.lines.push(default_line(test_product_id()));
+        // Add a default line so approval is valid.
+        let add_cmd = AddLine {
+            tenant_id,
+            order_id,
+            product_id: test_product_id(),
+            quantity: 10,
+            occurred_at: test_time(),
+        };
+        let events = order
+            .handle(&PurchaseOrderCommand::AddLine(add_cmd))
+            .unwrap();
+        order.apply(&events[0]);
 
         let approve_cmd = Approve {
             tenant_id,
@@ -440,7 +511,17 @@ mod tests {
         order.apply(&events[0]);
 
         // Add a line but do not approve.
-        order.lines.push(default_line(test_product_id()));
+        let add_cmd = AddLine {
+            tenant_id,
+            order_id,
+            product_id: test_product_id(),
+            quantity: 10,
+            occurred_at: test_time(),
+        };
+        let events = order
+            .handle(&PurchaseOrderCommand::AddLine(add_cmd))
+            .unwrap();
+        order.apply(&events[0]);
 
         let receive_cmd = ReceiveGoods {
             tenant_id,
@@ -476,7 +557,17 @@ mod tests {
             .unwrap();
         order.apply(&events[0]);
 
-        order.lines.push(default_line(product_id));
+        let add_cmd = AddLine {
+            tenant_id,
+            order_id,
+            product_id,
+            quantity: 10,
+            occurred_at: test_time(),
+        };
+        let events = order
+            .handle(&PurchaseOrderCommand::AddLine(add_cmd))
+            .unwrap();
+        order.apply(&events[0]);
 
         let approve_cmd = Approve {
             tenant_id,

@@ -7,6 +7,6 @@ pub mod product;
 
 pub use product::{
     ActivateProduct, ArchiveProduct, CreateProduct, Product, ProductArchived, ProductActivated,
-    ProductCommand, ProductCreated, ProductEvent, ProductId, ProductStatus,
+    PricingMetadata, ProductCommand, ProductCreated, ProductEvent, ProductId, ProductStatus,
 };
 
