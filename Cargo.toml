@@ -7,6 +7,7 @@ members = [
   "crates/api",
   "crates/ai",
   "crates/inventory",
+  "crates/parties",
   "crates/products",
   "crates/infra",
   "crates/observability",
