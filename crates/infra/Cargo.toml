@@ -16,6 +16,7 @@ forgeerp-events = { path = "../events" }
 forgeerp-inventory = { path = "../inventory" }
 forgeerp-parties = { path = "../parties" }
 forgeerp-invoicing = { path = "../invoicing" }
+forgeerp-accounting = { path = "../accounting" }
 forgeerp-ai = { path = "../ai" }
 serde = { workspace = true }
 serde_json = { workspace = true }
