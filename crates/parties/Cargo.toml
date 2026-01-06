@@ -1,0 +1,18 @@
+[package]
+name = "forgeerp-parties"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+forgeerp-core = { path = "../core" }
+forgeerp-events = { path = "../events" }
+serde = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+
