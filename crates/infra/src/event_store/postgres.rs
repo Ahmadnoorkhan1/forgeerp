@@ -30,6 +30,7 @@ use tracing::{instrument, Span};
 
 use forgeerp_core::{AggregateId, ExpectedVersion, TenantId};
 
+use super::query::{EventFilter, EventQuery, EventQueryResult, Pagination};
 use super::r#trait::{EventStore, EventStoreError, StoredEvent, UncommittedEvent};
 
 /// Postgres-backed append-only event store.
@@ -655,6 +656,207 @@ impl EventStore for PostgresEventStore {
             ))?;
 
         handle.block_on(self.load_stream(tenant_id, aggregate_id))
+    }
+}
+
+impl EventQuery for PostgresEventStore {
+    async fn query_events(
+        &self,
+        tenant_id: TenantId,
+        filter: EventFilter,
+        pagination: Pagination,
+    ) -> Result<EventQueryResult, EventStoreError> {
+        // Build WHERE conditions using COALESCE for optional filters
+        // This allows us to use a single parameterized query
+        let agg_id_param: Option<uuid::Uuid> = filter.aggregate_id.map(|id| *id.as_uuid());
+        let agg_type_param: Option<&str> = filter.aggregate_type.as_deref();
+        let evt_type_param: Option<&str> = filter.event_type.as_deref();
+
+        // Count query with filters
+        let count_row = sqlx::query(
+            r#"
+            SELECT COUNT(*) as total
+            FROM events
+            WHERE tenant_id = $1
+                AND ($2::uuid IS NULL OR aggregate_id = $2)
+                AND ($3::text IS NULL OR aggregate_type = $3)
+                AND ($4::text IS NULL OR event_type = $4)
+                AND ($5::timestamp IS NULL OR occurred_at >= $5)
+                AND ($6::timestamp IS NULL OR occurred_at <= $6)
+            "#,
+        )
+        .bind(tenant_id.as_uuid())
+        .bind(agg_id_param)
+        .bind(agg_type_param)
+        .bind(evt_type_param)
+        .bind(filter.occurred_after)
+        .bind(filter.occurred_before)
+        .fetch_one(&*self.pool)
+        .await
+        .map_err(|e| map_sqlx_error("count_events", e))?;
+
+        let total: i64 = count_row
+            .try_get("total")
+            .map_err(|e| EventStoreError::InvalidAppend(format!("failed to read count: {}", e)))?;
+
+        // Events query with filters and pagination
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                event_id,
+                tenant_id,
+                aggregate_id,
+                aggregate_type,
+                sequence_number,
+                event_type,
+                event_version,
+                occurred_at,
+                payload,
+                created_at
+            FROM events
+            WHERE tenant_id = $1
+                AND ($2::uuid IS NULL OR aggregate_id = $2)
+                AND ($3::text IS NULL OR aggregate_type = $3)
+                AND ($4::text IS NULL OR event_type = $4)
+                AND ($5::timestamp IS NULL OR occurred_at >= $5)
+                AND ($6::timestamp IS NULL OR occurred_at <= $6)
+            ORDER BY occurred_at DESC, sequence_number ASC
+            LIMIT $7 OFFSET $8
+            "#,
+        )
+        .bind(tenant_id.as_uuid())
+        .bind(agg_id_param)
+        .bind(agg_type_param)
+        .bind(evt_type_param)
+        .bind(filter.occurred_after)
+        .bind(filter.occurred_before)
+        .bind(pagination.limit as i64)
+        .bind(pagination.offset as i64)
+        .fetch_all(&*self.pool)
+        .await
+        .map_err(|e| map_sqlx_error("query_events", e))?;
+
+        let mut events = Vec::with_capacity(rows.len());
+        for row in rows {
+            let stored = StoredEventRow::from_row(&row)
+                .map_err(|e| EventStoreError::InvalidAppend(format!("failed to deserialize event row: {}", e)))?;
+            events.push(stored.into());
+        }
+
+        let has_more = total > (pagination.offset + pagination.limit) as i64;
+
+        Ok(EventQueryResult {
+            events,
+            total: total as u64,
+            pagination,
+            has_more,
+        })
+    }
+
+    async fn get_aggregate_events(
+        &self,
+        tenant_id: TenantId,
+        aggregate_id: AggregateId,
+        pagination: Option<Pagination>,
+    ) -> Result<EventQueryResult, EventStoreError> {
+        // For aggregate streams, order by sequence_number (ascending) for chronological replay
+        let pagination = pagination.unwrap_or_default();
+
+        // Count total events for this aggregate
+        let count_row = sqlx::query(
+            "SELECT COUNT(*) as total FROM events WHERE tenant_id = $1 AND aggregate_id = $2"
+        )
+        .bind(tenant_id.as_uuid())
+        .bind(aggregate_id.as_uuid())
+        .fetch_one(&*self.pool)
+        .await
+        .map_err(|e| map_sqlx_error("count_aggregate_events", e))?;
+
+        let total: i64 = count_row
+            .try_get("total")
+            .map_err(|e| EventStoreError::InvalidAppend(format!("failed to read count: {}", e)))?;
+
+        // Query events ordered by sequence_number (ascending)
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                event_id,
+                tenant_id,
+                aggregate_id,
+                aggregate_type,
+                sequence_number,
+                event_type,
+                event_version,
+                occurred_at,
+                payload,
+                created_at
+            FROM events
+            WHERE tenant_id = $1 AND aggregate_id = $2
+            ORDER BY sequence_number ASC
+            LIMIT $3 OFFSET $4
+            "#,
+        )
+        .bind(tenant_id.as_uuid())
+        .bind(aggregate_id.as_uuid())
+        .bind(pagination.limit as i64)
+        .bind(pagination.offset as i64)
+        .fetch_all(&*self.pool)
+        .await
+        .map_err(|e| map_sqlx_error("get_aggregate_events", e))?;
+
+        let mut events = Vec::with_capacity(rows.len());
+        for row in rows {
+            let stored = StoredEventRow::from_row(&row)
+                .map_err(|e| EventStoreError::InvalidAppend(format!("failed to deserialize event row: {}", e)))?;
+            events.push(stored.into());
+        }
+
+        let has_more = total > (pagination.offset + pagination.limit) as i64;
+
+        Ok(EventQueryResult {
+            events,
+            total: total as u64,
+            pagination,
+            has_more,
+        })
+    }
+
+    async fn get_event_by_id(
+        &self,
+        tenant_id: TenantId,
+        event_id: uuid::Uuid,
+    ) -> Result<Option<StoredEvent>, EventStoreError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                event_id,
+                tenant_id,
+                aggregate_id,
+                aggregate_type,
+                sequence_number,
+                event_type,
+                event_version,
+                occurred_at,
+                payload,
+                created_at
+            FROM events
+            WHERE tenant_id = $1 AND event_id = $2
+            LIMIT 1
+            "#,
+        )
+        .bind(tenant_id.as_uuid())
+        .bind(event_id)
+        .fetch_optional(&*self.pool)
+        .await
+        .map_err(|e| map_sqlx_error("get_event_by_id", e))?;
+
+        if let Some(row) = row {
+            let stored = StoredEventRow::from_row(&row)
+                .map_err(|e| EventStoreError::InvalidAppend(format!("failed to deserialize event row: {}", e)))?;
+            Ok(Some(stored.into()))
+        } else {
+            Ok(None)
+        }
     }
 }
 

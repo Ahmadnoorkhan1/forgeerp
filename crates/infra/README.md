@@ -37,6 +37,27 @@ Types:
 - `StoredEvent`: persisted event with assigned `sequence_number`
 - `EventStoreError`: concurrency / tenant isolation / validation errors
 
+### Event query interface (inspection & debugging)
+
+`infra` provides an **async query interface** for read-only event inspection:
+
+- `EventQuery` trait
+  - `query_events(tenant_id, filter, pagination)` - query events with filters (ordered by occurred_at DESC)
+  - `get_aggregate_events(tenant_id, aggregate_id, pagination)` - get events for a specific aggregate (ordered by sequence_number ASC)
+  - `get_event_by_id(tenant_id, event_id)` - get a single event by ID
+- Features:
+  - **Tenant-scoped**: All queries are automatically scoped to the authenticated tenant
+  - **Paginated**: Safe-by-default with maximum page size of 1000
+  - **Filterable**: Filter by aggregate_id, aggregate_type, event_type, time range
+  - **Read-only**: No mutations possible through this interface
+
+Types:
+- `EventFilter`: optional filters for aggregate_id, aggregate_type, event_type, time range
+- `Pagination`: limit/offset pagination (default limit: 50, max: 1000)
+- `EventQueryResult`: paginated result with total count and has_more flag
+
+Both `InMemoryEventStore` and `PostgresEventStore` implement `EventQuery`.
+
 ### In-memory implementation (tests/dev)
 
 - `InMemoryEventStore`: an in-memory, tenant-scoped store intended for tests and local development.
@@ -130,6 +151,7 @@ infra/src/
   event_store/
     mod.rs
     trait.rs
+    query.rs      # EventQuery trait for inspection
     in_memory.rs
   ai/
     mod.rs
