@@ -1272,6 +1272,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "forgeerp-sales"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "forgeerp-core",
+ "forgeerp-events",
+ "forgeerp-products",
+ "proptest",
+ "serde",
+]
+
+[[package]]
 name = "form_urlencoded"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

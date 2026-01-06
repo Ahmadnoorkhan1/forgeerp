@@ -1,0 +1,19 @@
+[package]
+name = "forgeerp-sales"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+forgeerp-core = { path = "../core" }
+forgeerp-events = { path = "../events" }
+forgeerp-products = { path = "../products" }
+serde = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+
