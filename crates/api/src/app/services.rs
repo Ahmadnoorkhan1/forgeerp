@@ -789,6 +789,24 @@ impl AppServices {
             }
         }
     }
+
+    /// Get the event store for replay operations (InMemory).
+    pub fn event_store_in_memory(&self) -> Option<Arc<InMemoryEventStore>> {
+        match self {
+            AppServices::InMemory { event_store, .. } => Some(event_store.clone()),
+            #[cfg(feature = "redis")]
+            AppServices::Persistent { .. } => None,
+        }
+    }
+
+    /// Get the event store for replay operations (Postgres).
+    #[cfg(feature = "redis")]
+    pub fn event_store_persistent(&self) -> Option<Arc<PostgresEventStore>> {
+        match self {
+            AppServices::InMemory { .. } => None,
+            AppServices::Persistent { event_store, .. } => Some(event_store.clone()),
+        }
+    }
 }
 
 /// Build an SSE stream for a tenant (used by `/stream`).

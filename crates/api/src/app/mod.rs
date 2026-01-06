@@ -24,10 +24,12 @@ pub async fn build_app(jwt_secret: String) -> Router {
     let auth_state = middleware::AuthState { jwt };
 
     let services = Arc::new(services::build_services().await);
+    let replay_jobs = routes::replay::ReplayJobStore::new();
 
     // Protected routes: require auth + tenant context.
     let protected = routes::router()
         .layer(Extension(services))
+        .layer(Extension(replay_jobs))
         .layer(axum::middleware::from_fn_with_state(
             auth_state,
             middleware::auth_middleware,
