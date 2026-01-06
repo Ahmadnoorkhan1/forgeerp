@@ -1286,6 +1286,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "forgeerp-purchasing"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "forgeerp-core",
+ "forgeerp-events",
+ "forgeerp-parties",
+ "forgeerp-products",
+ "proptest",
+ "serde",
+]
+
+[[package]]
 name = "forgeerp-sales"
 version = "0.1.0"
 dependencies = [
