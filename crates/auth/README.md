@@ -28,6 +28,7 @@
 
 ### RBAC enforcement
 - `authorize(&Principal, &Permission)` returns explicit `AuthzError` (no panics)
+- `explain_authorization(&Principal, &Permission, role_mapping)` provides detailed explanations of authorization decisions
 
 ### Command-boundary authorization (centralized)
 
@@ -42,6 +43,22 @@ The API layer should enforce required permissions **before** dispatching command
 
 `Permission("*")` is treated as **allow-all** for the current tenant context. This is useful for
 admin/service roles without enumerating every permission in tokens.
+
+### Authorization Explanation & Auditing
+
+The `explain_authorization()` function provides transparent, debuggable explanations of authorization decisions. It returns:
+
+- **Whether access was granted** (`granted: bool`)
+- **Human-readable reason** for the decision
+- **Principal state**: roles, permissions, tenant context
+- **Denial reason** (if denied): why it was denied and suggestions for fixing
+
+This enables answering the question: **"Why was this request denied?"**
+
+The `RbacRegistry` provides a complete view of the RBAC system:
+- All available roles and their granted permissions
+- All available permissions with descriptions and categories
+- Role-to-permission mappings for auditing
 
 ### User Aggregate (event-sourced identity management)
 

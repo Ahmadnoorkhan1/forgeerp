@@ -9,7 +9,11 @@ pub mod principal;
 pub mod roles;
 pub mod user;
 
-pub use authorize::{authorize, AuthzError, CommandAuthorization, Principal};
+pub use authorize::{
+    explain_authorization, AuthorizationExplanation, CommandAuthorization, DenialKind,
+    DenialReason, PermissionDefinition, Principal, PrincipalState, RbacRegistry, RoleDefinition,
+    authorize, AuthzError,
+};
 pub use claims::{Hs256JwtValidator, JwtClaims, JwtValidator, TokenValidationError, validate_claims};
 pub use permissions::{admin, Permission};
 pub use principal::{PrincipalId, TenantMembership};

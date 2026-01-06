@@ -9,6 +9,7 @@ pub mod invoices;
 pub mod ledger;
 pub mod products;
 pub mod purchases;
+pub mod rbac;
 pub mod sales;
 pub mod suppliers;
 pub mod system;
@@ -28,6 +29,7 @@ pub fn router() -> Router {
         .nest("/ledger", ledger::router())
         .nest("/ar", ar::router())
         .nest("/admin", admin::router())
+        .nest("/admin/rbac", rbac::router())
 }
 
 
