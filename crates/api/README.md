@@ -100,6 +100,33 @@
 - Verify role-permission mappings
 - Provide self-service permission checks for users
 
+### Admin - Event Inspection
+- `GET /admin/events` → list events with filters and pagination
+- `GET /admin/events/aggregates/{id}` → get all events for a specific aggregate
+- `GET /admin/events/{event_id}` → get a single event by ID
+
+**Query Parameters (for `/admin/events`):**
+- `aggregate_id`: Filter by aggregate ID (UUID)
+- `aggregate_type`: Filter by aggregate type (e.g., "inventory.item")
+- `event_type`: Filter by event type (e.g., "inventory.item.created")
+- `occurred_after`: Filter events after this timestamp (ISO 8601)
+- `occurred_before`: Filter events before this timestamp (ISO 8601)
+- `limit`: Maximum events per page (default: 50, max: 1000)
+- `offset`: Pagination offset (default: 0)
+
+**Features:**
+- **Tenant-scoped**: All queries are automatically scoped to the authenticated tenant
+- **Paginated**: Safe-by-default with maximum page size of 1000
+- **Filterable**: Multiple filter criteria can be combined
+- **Read-only**: No mutations possible through these endpoints
+- **Raw payloads**: Full event payloads are returned for inspection
+
+**Use Cases:**
+- Debug event sourcing issues by inspecting event streams
+- Audit trail for compliance and operational visibility
+- Replay debugging (see exact sequence of events for an aggregate)
+- Investigate projection inconsistencies
+
 ## Authentication + tenant context propagation
 
 This crate implements an Axum middleware that:
@@ -195,6 +222,7 @@ api/src/
       ar.rs
       admin.rs     # identity management
       rbac.rs      # RBAC audit & authorization explanation
+      events.rs    # event inspection endpoints
   authz.rs       # command-boundary authorization guard
   context.rs     # TenantContext / PrincipalContext
   middleware.rs  # auth middleware (Bearer JWT)

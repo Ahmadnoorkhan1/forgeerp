@@ -3,6 +3,7 @@ use std::sync::RwLock;
 
 use forgeerp_core::{AggregateId, ExpectedVersion, TenantId};
 
+use super::query::{EventFilter, EventQuery, EventQueryResult, Pagination};
 use super::r#trait::{EventStore, EventStoreError, StoredEvent, UncommittedEvent};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -130,6 +131,141 @@ impl EventStore for InMemoryEventStore {
             .map_err(|_| EventStoreError::InvalidAppend("lock poisoned".to_string()))?;
 
         Ok(streams.get(&key).cloned().unwrap_or_default())
+    }
+}
+
+impl EventQuery for InMemoryEventStore {
+    async fn query_events(
+        &self,
+        tenant_id: TenantId,
+        filter: EventFilter,
+        pagination: Pagination,
+    ) -> Result<EventQueryResult, EventStoreError> {
+        // Use spawn_blocking since we're accessing RwLock (blocking operation)
+        let streams = {
+            let guard = self
+                .streams
+                .read()
+                .map_err(|_| EventStoreError::InvalidAppend("lock poisoned".to_string()))?;
+            guard.clone()
+        };
+
+        // Collect all events for the tenant
+        let mut all_events: Vec<StoredEvent> = Vec::new();
+        for (key, stream) in streams.iter() {
+            if key.tenant_id == tenant_id {
+                all_events.extend(stream.iter().cloned());
+            }
+        }
+
+        // Apply filters
+        let mut filtered: Vec<StoredEvent> = all_events
+            .into_iter()
+            .filter(|e| {
+                if let Some(agg_id) = filter.aggregate_id {
+                    if e.aggregate_id != agg_id {
+                        return false;
+                    }
+                }
+                if let Some(ref agg_type) = filter.aggregate_type {
+                    if e.aggregate_type != *agg_type {
+                        return false;
+                    }
+                }
+                if let Some(ref evt_type) = filter.event_type {
+                    if e.event_type != *evt_type {
+                        return false;
+                    }
+                }
+                if let Some(after) = filter.occurred_after {
+                    if e.occurred_at < after {
+                        return false;
+                    }
+                }
+                if let Some(before) = filter.occurred_before {
+                    if e.occurred_at > before {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect();
+
+        // Sort by occurred_at (descending), then sequence_number (ascending)
+        filtered.sort_by(|a, b| {
+            match b.occurred_at.cmp(&a.occurred_at) {
+                std::cmp::Ordering::Equal => a.sequence_number.cmp(&b.sequence_number),
+                other => other,
+            }
+        });
+
+        let total = filtered.len() as u64;
+
+        // Apply pagination
+        let start = pagination.offset as usize;
+        let paginated = filtered.into_iter().skip(start).take(pagination.limit as usize).collect();
+
+        let has_more = total > (pagination.offset + pagination.limit) as u64;
+
+        Ok(EventQueryResult {
+            events: paginated,
+            total,
+            pagination,
+            has_more,
+        })
+    }
+
+    async fn get_aggregate_events(
+        &self,
+        tenant_id: TenantId,
+        aggregate_id: AggregateId,
+        pagination: Option<Pagination>,
+    ) -> Result<EventQueryResult, EventStoreError> {
+        // For aggregate streams, use load_stream (sequence order) instead of query_events (time order)
+        let all_events = self.load_stream(tenant_id, aggregate_id)?;
+
+        let total = all_events.len() as u64;
+        let pagination = pagination.unwrap_or_default();
+
+        let start = pagination.offset as usize;
+        let paginated: Vec<StoredEvent> = all_events
+            .into_iter()
+            .skip(start)
+            .take(pagination.limit as usize)
+            .collect();
+
+        let has_more = total > (pagination.offset + pagination.limit) as u64;
+
+        Ok(EventQueryResult {
+            events: paginated,
+            total,
+            pagination,
+            has_more,
+        })
+    }
+
+    async fn get_event_by_id(
+        &self,
+        tenant_id: TenantId,
+        event_id: uuid::Uuid,
+    ) -> Result<Option<StoredEvent>, EventStoreError> {
+        let streams = {
+            let guard = self
+                .streams
+                .read()
+                .map_err(|_| EventStoreError::InvalidAppend("lock poisoned".to_string()))?;
+            guard.clone()
+        };
+        
+        for (key, stream) in streams.iter() {
+            if key.tenant_id == tenant_id {
+                if let Some(event) = stream.iter().find(|e| e.event_id == event_id) {
+                    return Ok(Some(event.clone()));
+                }
+            }
+        }
+        
+        Ok(None)
     }
 }
 

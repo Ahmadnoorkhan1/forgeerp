@@ -13,7 +13,7 @@ use forgeerp_auth::UserId;
 use forgeerp_infra::{
     ai::{AiInsightSink, InventoryAnomalyRunner, InventoryAnomalyRunnerHandle},
     command_dispatcher::{CommandDispatcher, DispatchError},
-    event_store::{InMemoryEventStore, StoredEvent},
+    event_store::{EventFilter, EventQuery, EventQueryResult, InMemoryEventStore, Pagination, StoredEvent},
     projections::{
         accounting::{AccountBalance, AccountBalancesProjection},
         invoices::{InvoiceReadModel, InvoicesProjection},
@@ -33,7 +33,7 @@ use tokio_stream::{wrappers::BroadcastStream, StreamExt};
 #[cfg(feature = "redis")]
 use forgeerp_infra::{
     event_bus::RedisStreamsEventBus,
-    event_store::PostgresEventStore,
+    event_store::{EventFilter, EventQuery, EventQueryResult, Pagination, PostgresEventStore},
     read_model::PostgresInventoryStore,
 };
 #[cfg(feature = "redis")]
@@ -98,6 +98,7 @@ type PersistentDispatcher = CommandDispatcher<Arc<PostgresEventStore>, Arc<Redis
 pub enum AppServices {
     InMemory {
         dispatcher: Arc<InMemoryDispatcher>,
+        event_store: Arc<InMemoryEventStore>,
         inventory_projection: Arc<
             InventoryStockProjection<Arc<InMemoryTenantStore<forgeerp_inventory::InventoryItemId, InventoryReadModel>>>,
         >,
@@ -128,6 +129,7 @@ pub enum AppServices {
     #[cfg(feature = "redis")]
     Persistent {
         dispatcher: Arc<PersistentDispatcher>,
+        event_store: Arc<PostgresEventStore>,
         inventory_projection: Arc<InventoryStockProjection<Arc<PostgresInventoryStore>>>,
         parties_projection: Arc<
             PartyDirectoryProjection<Arc<InMemoryTenantStore<forgeerp_parties::PartyId, PartyReadModel>>>,
@@ -316,9 +318,10 @@ fn build_in_memory_services() -> AppServices {
         });
     }
 
-    let dispatcher: Arc<InMemoryDispatcher> = Arc::new(CommandDispatcher::new(store, bus));
+    let dispatcher: Arc<InMemoryDispatcher> = Arc::new(CommandDispatcher::new(store.clone(), bus));
     AppServices::InMemory {
         dispatcher,
+        event_store: store,
         inventory_projection,
         parties_projection,
         products_projection,
@@ -486,9 +489,10 @@ async fn build_persistent_services() -> AppServices {
         });
     }
 
-    let dispatcher: Arc<PersistentDispatcher> = Arc::new(CommandDispatcher::new(store, bus.clone()));
+    let dispatcher: Arc<PersistentDispatcher> = Arc::new(CommandDispatcher::new(store.clone(), bus.clone()));
     AppServices::Persistent {
         dispatcher,
+        event_store: store,
         inventory_projection,
         parties_projection,
         products_projection,
@@ -729,6 +733,59 @@ impl AppServices {
             #[cfg(feature = "redis")]
             AppServices::Persistent { users_projection, .. } => {
                 users_projection.effective_permissions(tenant_id, user_id, role_permissions)
+            }
+        }
+    }
+
+    /// Query events with filters and pagination.
+    pub async fn query_events(
+        &self,
+        tenant_id: TenantId,
+        filter: EventFilter,
+        pagination: Pagination,
+    ) -> Result<EventQueryResult, forgeerp_infra::event_store::EventStoreError> {
+        match self {
+            AppServices::InMemory { event_store, .. } => {
+                event_store.query_events(tenant_id, filter, pagination).await
+            }
+            #[cfg(feature = "redis")]
+            AppServices::Persistent { event_store, .. } => {
+                event_store.query_events(tenant_id, filter, pagination).await
+            }
+        }
+    }
+
+    /// Get events for a specific aggregate.
+    pub async fn get_aggregate_events(
+        &self,
+        tenant_id: TenantId,
+        aggregate_id: AggregateId,
+        pagination: Option<Pagination>,
+    ) -> Result<EventQueryResult, forgeerp_infra::event_store::EventStoreError> {
+        match self {
+            AppServices::InMemory { event_store, .. } => {
+                event_store.get_aggregate_events(tenant_id, aggregate_id, pagination).await
+            }
+            #[cfg(feature = "redis")]
+            AppServices::Persistent { event_store, .. } => {
+                event_store.get_aggregate_events(tenant_id, aggregate_id, pagination).await
+            }
+        }
+    }
+
+    /// Get a single event by its ID.
+    pub async fn get_event_by_id(
+        &self,
+        tenant_id: TenantId,
+        event_id: uuid::Uuid,
+    ) -> Result<Option<StoredEvent>, forgeerp_infra::event_store::EventStoreError> {
+        match self {
+            AppServices::InMemory { event_store, .. } => {
+                event_store.get_event_by_id(tenant_id, event_id).await
+            }
+            #[cfg(feature = "redis")]
+            AppServices::Persistent { event_store, .. } => {
+                event_store.get_event_by_id(tenant_id, event_id).await
             }
         }
     }

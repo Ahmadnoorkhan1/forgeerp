@@ -5,10 +5,12 @@
 
 pub mod in_memory;
 pub mod postgres;
+pub mod query;
 pub mod r#trait;
 
 pub use in_memory::InMemoryEventStore;
 pub use postgres::{PostgresEventStore, Snapshot};
+pub use query::{EventFilter, EventQuery, EventQueryResult, Pagination};
 pub use r#trait::{EventStore, EventStoreError, StoredEvent, UncommittedEvent};
 
 /// Adapter that publishes committed events to an `EventBus` after a successful append.
