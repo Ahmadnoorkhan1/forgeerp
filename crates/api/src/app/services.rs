@@ -26,6 +26,7 @@ use forgeerp_infra::{
         users::{EffectivePermissions, UserReadModel, UsersProjection},
     },
     read_model::InMemoryTenantStore,
+    saga::{sales_ar::SalesArSaga, CommandExecutor as SagaCommandExecutor, SagaRepository},
 };
 use tokio::sync::broadcast;
 use tokio_stream::{wrappers::BroadcastStream, StreamExt};
@@ -89,6 +90,69 @@ type InMemoryDispatcher = CommandDispatcher<
     Arc<InMemoryEventStore>,
     Arc<InMemoryEventBus<EventEnvelope<serde_json::Value>>>,
 >;
+
+/// Minimal command executor implementation for the Sales→AR saga using the in-memory dispatcher.
+struct InMemorySagaExecutor {
+    dispatcher: Arc<InMemoryDispatcher>,
+    default_ledger_id: AggregateId,
+}
+
+impl SagaCommandExecutor for InMemorySagaExecutor {
+    type Error = DispatchError;
+
+    fn execute(
+        &self,
+        tenant_id: TenantId,
+        aggregate_type: &str,
+        command_type: &str,
+        payload: &serde_json::Value,
+    ) -> Result<(), Self::Error> {
+        match (aggregate_type, command_type) {
+            ("Invoice", "IssueInvoice") => {
+                // Build IssueInvoice from sales order read model is implemented upstream (saga runner)
+                // Here we expect full payload with fields matching IssueInvoice
+                let cmd: forgeerp_invoicing::IssueInvoice =
+                    serde_json::from_value(payload.clone()).map_err(|e| DispatchError::Validation(e.to_string()))?;
+                let _ = self.dispatcher.dispatch::<forgeerp_invoicing::Invoice>(
+                    cmd.tenant_id,
+                    cmd.invoice_id.0,
+                    "invoicing.invoice",
+                    forgeerp_invoicing::InvoiceCommand::IssueInvoice(cmd),
+                    |_, id| forgeerp_invoicing::Invoice::empty(forgeerp_invoicing::InvoiceId::new(id)),
+                )?;
+                Ok(())
+            }
+            ("Ledger", "PostJournalEntry") => {
+                let cmd: forgeerp_accounting::PostJournalEntry =
+                    serde_json::from_value(payload.clone()).map_err(|e| DispatchError::Validation(e.to_string()))?;
+                let _ = self.dispatcher.dispatch::<forgeerp_accounting::Ledger>(
+                    cmd.tenant_id,
+                    self.default_ledger_id,
+                    "accounting.ledger",
+                    forgeerp_accounting::JournalCommand::PostJournalEntry(cmd),
+                    |_, id| forgeerp_accounting::Ledger::empty(forgeerp_accounting::LedgerId::new(id)),
+                )?;
+                Ok(())
+            }
+            ("Invoice", "VoidInvoice") => {
+                let cmd: forgeerp_invoicing::VoidInvoice =
+                    serde_json::from_value(payload.clone()).map_err(|e| DispatchError::Validation(e.to_string()))?;
+                let _ = self.dispatcher.dispatch::<forgeerp_invoicing::Invoice>(
+                    cmd.tenant_id,
+                    cmd.invoice_id.0,
+                    "invoicing.invoice",
+                    forgeerp_invoicing::InvoiceCommand::VoidInvoice(cmd),
+                    |_, id| forgeerp_invoicing::Invoice::empty(forgeerp_invoicing::InvoiceId::new(id)),
+                )?;
+                Ok(())
+            }
+            _ => Err(DispatchError::Validation(format!(
+                "Unsupported saga command: {}.{}",
+                aggregate_type, command_type
+            ))),
+        }
+    }
+}
 
 // Type-erased dispatcher for persistent implementations
 #[cfg(feature = "redis")]
@@ -320,6 +384,77 @@ fn build_in_memory_services() -> AppServices {
     }
 
     let dispatcher: Arc<InMemoryDispatcher> = Arc::new(CommandDispatcher::new(store.clone(), bus.clone()));
+    // Background subscriber: Sales→Invoice→Ledger saga
+    {
+        let sub = bus.subscribe();
+        let saga_repo = SagaRepository::<SalesArSaga, _>::new(store.clone());
+        let executor = InMemorySagaExecutor {
+            dispatcher: dispatcher.clone(),
+            default_ledger_id,
+        };
+        // Sales orders projection to build invoice lines
+        let sales_projection = sales_projection.clone();
+        tokio::task::spawn_blocking(move || loop {
+            match sub.recv() {
+                Ok(env) => {
+                    if let Some(correlation) = <SalesArSaga as forgeerp_events::Saga>::correlate(&env) {
+                        let tenant_id = env.tenant_id();
+                        let saga_id = <SalesArSaga as forgeerp_events::Saga>::saga_id(tenant_id, &correlation);
+                        // Rehydrate saga state
+                        let mut state = <SalesArSaga as forgeerp_events::Saga>::initial_state(tenant_id, &correlation);
+                        if let Ok(history) = saga_repo.load(tenant_id, saga_id) {
+                            for se in history {
+                                if let Ok(saga_evt) = serde_json::from_value::<forgeerp_infra::saga::sales_ar::SalesArSagaEvent>(se.payload.clone()) {
+                                    <SalesArSaga as forgeerp_events::Saga>::apply(&mut state, &saga_evt);
+                                }
+                            }
+                        }
+                        // React
+                        let actions = <SalesArSaga as forgeerp_events::Saga>::react(&state, tenant_id, &correlation, &env);
+                        for action in actions {
+                            match action {
+                                forgeerp_events::SagaAction::Emit { event_type, payload } => {
+                                    let _ = saga_repo.append_emit(tenant_id, saga_id, &event_type, payload);
+                                }
+                                forgeerp_events::SagaAction::Command { aggregate_type, command_type, mut payload } => {
+                                    // Fill IssueInvoice payload from sales read model if missing
+                                    if aggregate_type == "Invoice" && command_type == "IssueInvoice" {
+                                        if let Some(order) = sales_projection.get(tenant_id, &correlation) {
+                                            let invoice_id = forgeerp_invoicing::InvoiceId::new(AggregateId::new());
+                                            let lines: Vec<forgeerp_invoicing::InvoiceLine> = order.lines.iter().map(|l| {
+                                                forgeerp_invoicing::InvoiceLine {
+                                                    line_no: l.line_no,
+                                                    sales_order_id: order.order_id,
+                                                    product_id: l.product_id,
+                                                    quantity: l.quantity,
+                                                    unit_price: l.unit_price,
+                                                }
+                                            }).collect();
+                                            let due = chrono::Utc::now() + chrono::Duration::days(30);
+                                            let obj = payload.as_object_mut().unwrap();
+                                            obj.entry("tenant_id").or_insert(serde_json::json!(tenant_id));
+                                            obj.entry("invoice_id").or_insert(serde_json::json!(invoice_id));
+                                            obj.entry("lines").or_insert(serde_json::json!(lines));
+                                            obj.entry("due_date").or_insert(serde_json::json!(due));
+                                            obj.entry("occurred_at").or_insert(serde_json::json!(chrono::Utc::now()));
+                                        }
+                                    }
+                                    let _ = executor.execute(tenant_id, &aggregate_type, &command_type, &payload);
+                                }
+                                forgeerp_events::SagaAction::Compensate { aggregate_type, command_type, payload } => {
+                                    let _ = executor.execute(tenant_id, &aggregate_type, &command_type, &payload);
+                                }
+                                forgeerp_events::SagaAction::Complete => {
+                                    let _ = saga_repo.append_emit(tenant_id, saga_id, "saga.completed", serde_json::json!({}));
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        });
+    }
     AppServices::InMemory {
         dispatcher,
         event_store: store,
