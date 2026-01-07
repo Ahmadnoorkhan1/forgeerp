@@ -11,6 +11,7 @@ pub mod event;
 pub mod handler;
 pub mod in_memory_bus;
 pub mod projection;
+pub mod saga;
 pub mod runner;
 pub mod tenant;
 
@@ -21,6 +22,7 @@ pub use event::Event;
 pub use handler::CommandHandler;
 pub use in_memory_bus::InMemoryEventBus;
 pub use projection::Projection;
+pub use saga::{Saga, SagaAction};
 pub use runner::{ProjectionCursor, ProjectionError, ProjectionRunner};
 pub use tenant::TenantScoped;
 

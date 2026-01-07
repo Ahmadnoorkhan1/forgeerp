@@ -7,6 +7,7 @@ pub mod read_model;
 pub mod projections;
 pub mod workers;
 pub mod ai;
+pub mod saga;
 
 #[cfg(test)]
 mod integration_tests;
