@@ -8,6 +8,7 @@ pub mod projections;
 pub mod workers;
 pub mod ai;
 pub mod saga;
+pub mod jobs;
 
 #[cfg(test)]
 mod integration_tests;

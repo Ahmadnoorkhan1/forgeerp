@@ -148,6 +148,45 @@ Infra wires saga mechanics (from `forgeerp-events`) into running processes:
       - If ledger post fails, emit compensating `VoidInvoice`
     - Tenant-isolated streams; deterministic, idempotent application
 
+### Background Job System
+
+Infra provides a reliable background execution engine with retry, backoff, and dead-letter handling:
+
+- `jobs/` module:
+  - **Core types**:
+    - `Job`: tenant-scoped job with payload, status, retry policy, and execution history
+    - `JobId`: unique job identifier (UUID v7)
+    - `JobKind`: job type for routing (AI inference, projection rebuild, saga step, custom)
+    - `JobStatus`: lifecycle states (Pending, Running, Completed, Failed, DeadLettered, Cancelled)
+    - `RetryPolicy`: configurable retry with exponential/linear/fixed backoff and jitter
+  - **Job store**:
+    - `JobStore` trait: enqueue, claim, update, dead-letter, stats
+    - `InMemoryJobStore`: in-memory implementation for tests/dev
+    - Dead-letter queue (DLQ) for failed jobs with retry/delete operations
+  - **Job executor**:
+    - `JobExecutor`: polls store, executes jobs with registered handlers
+    - `JobExecutorHandle`: control (shutdown) and stats access
+    - Handler registration with pattern matching (exact, wildcard `*`, category `ai.*`)
+    - Automatic retry scheduling based on policy
+    - Dead-letter handling after max retries exhausted
+
+**Job kinds** for integration:
+- `JobKind::AiInference { job_type }` - AI inference jobs (e.g., inventory anomaly)
+- `JobKind::ProjectionRebuild { projection_name }` - Projection rebuild jobs
+- `JobKind::SagaStep { saga_type, step_name }` - Saga step execution
+- `JobKind::Custom { kind }` - Generic/custom jobs
+
+**Retry policies**:
+- `RetryPolicy::no_retry()` - No retries
+- `RetryPolicy::fixed(attempts, delay)` - Fixed delay between retries
+- `RetryPolicy::exponential(attempts, base, max)` - Exponential backoff with cap
+
+**Visibility**:
+- `JobStats`: pending, running, completed, failed, dead_lettered counts
+- `ExecutorStats`: jobs processed, succeeded, failed, dead-lettered, uptime
+- `Job.history`: execution attempt records with timing and errors
+- DLQ inspection and management (list, retry, delete)
+
 ## Module map
 
 ```
@@ -174,6 +213,14 @@ infra/src/
   workers/
     mod.rs
     projection_worker.rs
+  saga/
+    mod.rs
+    sales_ar.rs       # Reference saga: Sales → Invoice → Ledger
+  jobs/
+    mod.rs
+    types.rs          # Job, JobId, JobKind, JobStatus, RetryPolicy
+    store.rs          # JobStore trait + InMemoryJobStore
+    executor.rs       # JobExecutor + JobExecutorHandle
 ```
 
 
