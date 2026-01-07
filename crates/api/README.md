@@ -192,9 +192,30 @@ Each event is sent with:
 - SSE `event`: the topic name above
 - SSE `data`: a JSON payload describing the update
 
+### Event Stream Dashboard
+
+- `GET /admin/stream/events` - Stream events in real-time via Server-Sent Events (SSE)
+
+Provides live operational visibility of events as they occur in the system. Events are automatically filtered to the authenticated tenant and include:
+
+- `event_id` - Unique event identifier
+- `tenant_id` - Tenant that owns the event
+- `aggregate_id` - Aggregate instance ID
+- `aggregate_type` - Type of aggregate (e.g., "Product", "Invoice")
+- `sequence_number` - Position in the aggregate's event stream
+- `event_type` - Event variant name (if extractable from payload)
+- `occurred_at` - Timestamp when event occurred
+- `payload_preview` - First 500 characters of event payload
+
+The stream sends:
+- `event` messages - For each event that matches the tenant filter
+- `heartbeat` messages - Every 15 seconds to keep the connection alive
+
+Requires `admin.users.read` permission. Useful for debugging, operational monitoring, and understanding system behavior in real-time.
+
 ### Required config
 
-- `JWT_SECRET`: HS256 secret used by the validator (dev default is used if unset; don’t rely on it in real deployments).
+- `JWT_SECRET`: HS256 secret used by the validator (dev default is used if unset; don't rely on it in real deployments).
 
 ## Module map
 
