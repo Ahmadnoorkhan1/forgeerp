@@ -4,6 +4,7 @@ pub mod admin;
 pub mod ar;
 pub mod common;
 pub mod customers;
+pub mod event_stream;
 pub mod events;
 pub mod inventory;
 pub mod invoices;
@@ -34,6 +35,7 @@ pub fn router() -> Router {
         .nest("/admin/rbac", rbac::router())
         .nest("/admin/events", events::router())
         .nest("/admin/replay", replay::router())
+        .nest("/admin/stream", event_stream::router())
 }
 
 

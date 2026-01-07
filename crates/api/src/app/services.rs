@@ -99,6 +99,7 @@ pub enum AppServices {
     InMemory {
         dispatcher: Arc<InMemoryDispatcher>,
         event_store: Arc<InMemoryEventStore>,
+        event_bus: Arc<InMemoryEventBus<EventEnvelope<serde_json::Value>>>,
         inventory_projection: Arc<
             InventoryStockProjection<Arc<InMemoryTenantStore<forgeerp_inventory::InventoryItemId, InventoryReadModel>>>,
         >,
@@ -318,10 +319,11 @@ fn build_in_memory_services() -> AppServices {
         });
     }
 
-    let dispatcher: Arc<InMemoryDispatcher> = Arc::new(CommandDispatcher::new(store.clone(), bus));
+    let dispatcher: Arc<InMemoryDispatcher> = Arc::new(CommandDispatcher::new(store.clone(), bus.clone()));
     AppServices::InMemory {
         dispatcher,
         event_store: store,
+        event_bus: bus,
         inventory_projection,
         parties_projection,
         products_projection,
