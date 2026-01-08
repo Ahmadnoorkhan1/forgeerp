@@ -5,6 +5,13 @@ edition = "2024"
 
 [lib]
 path = "src/lib.rs"
+name = "forgeerp_desktop"
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "forgeerp-desktop"
+path = "src/main.rs"
+required-features = ["tauri"]
 
 [dependencies]
 serde = { workspace = true }
@@ -13,17 +20,38 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
-uuid = { workspace = true }
+uuid = { version = "1", features = ["v7", "serde", "js"] }
 
 forgeerp-core = { path = "../core" }
 forgeerp-inventory = { path = "../inventory" }
 
+# Backend-only dependencies (excluded for WASM builds)
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "chrono", "json"] }
+dirs = "5"
+
 # Tauri (optional feature for full desktop app)
-tauri = { version = "2", optional = true, features = ["macos-private-api"] }
+tauri = { version = "2", optional = true, features = [] }
+tauri-plugin-shell = { version = "2", optional = true }
 reqwest = { version = "0.12", features = ["json"], optional = true }
-tokio = { version = "1", features = ["full"], optional = true }
+tracing-subscriber = { version = "0.3", optional = true }
+
+# WASM frontend dependencies (required for WASM builds)
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+leptos = { version = "0.6", features = ["csr"] }
+leptos_router = { version = "0.6", features = ["csr"] }
+wasm-bindgen = { version = "0.2" }
+wasm-bindgen-futures = { version = "0.4" }
+serde-wasm-bindgen = { version = "0.6" }
+web-sys = { version = "0.3" }
+js-sys = { version = "0.3" }
+console_error_panic_hook = { version = "0.1" }
+
+[build-dependencies]
+tauri-build = { version = "2" }
 
 [features]
 default = []
-tauri = ["dep:tauri", "dep:reqwest", "dep:tokio"]
+tauri = ["dep:tauri", "dep:reqwest", "dep:tauri-plugin-shell", "dep:tracing-subscriber"]
 

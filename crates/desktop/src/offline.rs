@@ -2,14 +2,8 @@
 
 use thiserror::Error;
 
-/// Connectivity state of the client.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConnectivityState {
-    /// Online and connected to the API.
-    Online,
-    /// Offline (network unreachable or API unavailable).
-    Offline,
-}
+// Re-export from shared types module
+pub use crate::types::ConnectivityState;
 
 /// Offline mode configuration and state.
 #[derive(Debug)]
