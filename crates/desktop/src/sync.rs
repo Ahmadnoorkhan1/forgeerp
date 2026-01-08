@@ -6,13 +6,12 @@ use anyhow::Result;
 #[cfg(feature = "tauri")]
 use crate::cache::{LocalCache, InventoryReadModel};
 #[cfg(feature = "tauri")]
-use crate::offline::{OfflineMode, OfflineError};
+use crate::offline::OfflineMode;
 #[cfg(feature = "tauri")]
 use forgeerp_core::TenantId;
 #[cfg(feature = "tauri")]
 use forgeerp_inventory::InventoryItemId;
 #[cfg(feature = "tauri")]
-use serde_json::Value;
 
 /// Client for syncing read models from the API.
 ///
@@ -82,7 +81,7 @@ impl SyncClient {
     /// 3. Handle pagination/batching
     pub async fn full_sync(
         &self,
-        cache: &LocalCache,
+        _cache: &LocalCache,
         _tenant_id: TenantId,
         offline: &mut OfflineMode,
     ) -> Result<(), SyncError> {
