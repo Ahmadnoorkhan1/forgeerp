@@ -84,10 +84,10 @@ pub async fn stream_events(
                 event_bus.subscribe()
             }
             #[cfg(feature = "redis")]
-            AppServices::Persistent { event_bus, .. } => {
+            AppServices::Persistent { bus, .. } => {
                 // For Redis Streams, use a unique consumer group for this stream
                 let consumer_name = format!("event-stream-{}", uuid::Uuid::now_v7());
-                event_bus.subscribe_with_group("event.stream.dashboard", &consumer_name, Some(tenant_id))
+                bus.subscribe_with_group("event.stream.dashboard", &consumer_name, Some(tenant_id))
             }
         };
 

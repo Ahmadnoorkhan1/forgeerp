@@ -7,13 +7,13 @@ use std::{
 
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use forgeerp_ai::AiResult;
-use forgeerp_core::{AggregateId, DomainError, TenantId};
+use forgeerp_core::{AggregateId, DomainError, TenantId, ExpectedVersion};
 use forgeerp_events::{EventBus, EventEnvelope, InMemoryEventBus};
 use forgeerp_auth::UserId;
 use forgeerp_infra::{
     ai::{AiInsightSink, InventoryAnomalyRunner, InventoryAnomalyRunnerHandle},
     command_dispatcher::{CommandDispatcher, DispatchError},
-    event_store::{EventFilter, EventQuery, EventQueryResult, InMemoryEventStore, Pagination, StoredEvent},
+    event_store::{EventFilter, EventQuery, EventQueryResult, InMemoryEventStore, Pagination, StoredEvent, EventStoreError, UncommittedEvent},
     projections::{
         accounting::{AccountBalance, AccountBalancesProjection},
         invoices::{InvoiceReadModel, InvoicesProjection},
@@ -24,17 +24,19 @@ use forgeerp_infra::{
         purchasing::{PurchaseOrderReadModel, PurchaseOrdersProjection},
         sales_orders::{SalesOrderReadModel, SalesOrdersProjection},
         users::{EffectivePermissions, UserReadModel, UsersProjection},
+        UsersDatabaseProjection, DatabaseCredentialStore,
     },
     read_model::InMemoryTenantStore,
     saga::{sales_ar::SalesArSaga, CommandExecutor as SagaCommandExecutor, SagaRepository},
 };
 use tokio::sync::broadcast;
 use tokio_stream::{wrappers::BroadcastStream, StreamExt};
+use uuid::Uuid;
 
 #[cfg(feature = "redis")]
 use forgeerp_infra::{
     event_bus::RedisStreamsEventBus,
-    event_store::{EventFilter, EventQuery, EventQueryResult, Pagination, PostgresEventStore},
+    event_store::PostgresEventStore,
     read_model::PostgresInventoryStore,
 };
 #[cfg(feature = "redis")]
@@ -102,7 +104,7 @@ impl SagaCommandExecutor for InMemorySagaExecutor {
 
     fn execute(
         &self,
-        tenant_id: TenantId,
+        _tenant_id: TenantId,
         aggregate_type: &str,
         command_type: &str,
         payload: &serde_json::Value,
@@ -493,7 +495,7 @@ async fn build_persistent_services() -> AppServices {
     bus.ensure_consumer_group("inventory.projection")
         .expect("Failed to create consumer group");
 
-    let rm_store = Arc::new(PostgresInventoryStore::new(pool));
+    let rm_store = Arc::new(PostgresInventoryStore::new(pool.clone()));
     let inventory_projection: Arc<InventoryStockProjection<_>> =
         Arc::new(InventoryStockProjection::new(rm_store));
 
@@ -535,6 +537,10 @@ async fn build_persistent_services() -> AppServices {
 
     let users_store: Arc<InMemoryTenantStore<UserId, UserReadModel>> = Arc::new(InMemoryTenantStore::new());
     let users_projection: Arc<UsersProjection<_>> = Arc::new(UsersProjection::new(users_store));
+
+    // Database-backed projection for users (persists to user_credentials and users_read_model tables)
+    let users_db_projection = Arc::new(UsersDatabaseProjection::new(pool.clone()));
+    let _credentials_db_store = Arc::new(DatabaseCredentialStore::new(pool.clone()));
 
     let default_ledger_id = AggregateId::new();
 
@@ -626,6 +632,29 @@ async fn build_persistent_services() -> AppServices {
         });
     }
 
+    // Spawn separate async task for database projection of users
+    {
+        let bus = bus.clone();
+        let users_db_projection = users_db_projection.clone();
+        tokio::spawn(async move {
+            let sub = bus.subscribe_with_group(
+                "users.database.projection",
+                &format!("consumer-users-{}", uuid::Uuid::now_v7()),
+                None,
+            );
+            loop {
+                match sub.recv() {
+                    Ok(env) => {
+                        if let Err(e) = users_db_projection.apply_envelope(&env).await {
+                            tracing::warn!("users database projection apply failed: {e}");
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
     let dispatcher: Arc<PersistentDispatcher> = Arc::new(CommandDispatcher::new(store.clone(), bus.clone()));
     AppServices::Persistent {
         dispatcher,
@@ -699,7 +728,168 @@ impl AppServices {
                 command,
                 make_aggregate,
             ),
+            // AppServices::Persistent { .. } => {
+            //     // Persistent backend with Postgres requires async context
+            //     Err(DispatchError::Store(
+            //         EventStoreError::InvalidAppend(
+            //             "PostgresEventStore requires async context. Use dispatch within async context.".to_string()
+            //         )
+            //     ))
+            // }
         }
+    }
+
+    /// Async version of dispatch for Postgres backend.
+    /// Must be called from async context.
+    pub async fn dispatch_async<A>(
+        &self,
+        tenant_id: TenantId,
+        aggregate_id: AggregateId,
+        aggregate_type: impl Into<String>,
+        command: A::Command,
+        make_aggregate: impl FnOnce(TenantId, AggregateId) -> A,
+    ) -> Result<Vec<StoredEvent>, DispatchError>
+    where
+        A: forgeerp_core::Aggregate<Error = DomainError>,
+        A::Event: forgeerp_events::Event + serde::Serialize + serde::de::DeserializeOwned,
+    {
+        match self {
+            AppServices::InMemory { dispatcher, .. } => dispatcher.dispatch::<A>(
+                tenant_id,
+                aggregate_id,
+                aggregate_type,
+                command,
+                make_aggregate,
+            ),
+            #[cfg(feature = "redis")]
+            AppServices::Persistent { event_store, bus, .. } => {
+                // Direct dispatch without going through EventStore trait
+                // This allows us to use async methods directly
+                self.dispatch_persistent_async::<A>(
+                    event_store.clone(),
+                    bus.clone(),
+                    tenant_id,
+                    aggregate_id,
+                    aggregate_type,
+                    command,
+                    make_aggregate,
+                ).await
+            }
+        }
+    }
+
+    #[cfg(feature = "redis")]
+    async fn dispatch_persistent_async<A>(
+        &self,
+        event_store: Arc<PostgresEventStore>,
+        bus: Arc<RedisStreamsEventBus>,
+        tenant_id: TenantId,
+        aggregate_id: AggregateId,
+        aggregate_type: impl Into<String>,
+        command: A::Command,
+        make_aggregate: impl FnOnce(TenantId, AggregateId) -> A,
+    ) -> Result<Vec<StoredEvent>, DispatchError>
+    where
+        A: forgeerp_core::Aggregate<Error = DomainError>,
+        A::Event: forgeerp_events::Event + serde::Serialize + serde::de::DeserializeOwned,
+    {
+        // 1) Load history (tenant-scoped) using async method
+        let history = event_store.load_stream(tenant_id, aggregate_id)
+            .await
+            .map_err(DispatchError::Store)?;
+
+        // Validate loaded stream
+        let mut last = 0u64;
+        for (idx, e) in history.iter().enumerate() {
+            if e.tenant_id != tenant_id {
+                return Err(DispatchError::TenantIsolation(format!(
+                    "loaded stream contains wrong tenant_id at index {idx}"
+                )));
+            }
+            if e.aggregate_id != aggregate_id {
+                return Err(DispatchError::TenantIsolation(format!(
+                    "loaded stream contains wrong aggregate_id at index {idx}"
+                )));
+            }
+            if e.sequence_number == 0 {
+                return Err(DispatchError::Store(EventStoreError::InvalidAppend(
+                    "stored event has sequence_number=0".to_string(),
+                )));
+            }
+            if e.sequence_number <= last {
+                return Err(DispatchError::Store(EventStoreError::InvalidAppend(format!(
+                    "non-monotonic sequence_number in loaded stream (last={last}, found={})",
+                    e.sequence_number
+                ))));
+            }
+            last = e.sequence_number;
+        }
+
+        let expected = ExpectedVersion::Exact(last);
+
+        // 2) Rehydrate aggregate
+        let mut aggregate = make_aggregate(tenant_id, aggregate_id);
+        let mut sorted = history.clone();
+        sorted.sort_by_key(|e| e.sequence_number);
+        for stored in sorted {
+            let ev: A::Event = serde_json::from_value(stored.payload)
+                .map_err(|e| DispatchError::Deserialize(e.to_string()))?;
+            aggregate.apply(&ev);
+        }
+
+        // 3) Decide events (no mutation)
+        let decided = aggregate.handle(&command).map_err(DispatchError::from)?;
+        if decided.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // 4) Persist (append-only, optimistic)
+        let aggregate_type_str = aggregate_type.into();
+        let uncommitted: Vec<_> = decided
+            .iter()
+            .map(|ev| {
+                UncommittedEvent::from_typed(
+                    tenant_id,
+                    aggregate_id,
+                    aggregate_type_str.clone(),
+                    Uuid::now_v7(),
+                    ev,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let committed = event_store.append_events(tenant_id, aggregate_id, uncommitted, expected)
+            .await
+            .map_err(DispatchError::Store)?;
+
+        // 5) Publish committed events ke Redis (fire-and-forget).
+        //
+        // Event sudah aman tersimpan di Postgres (step 4). Publish ke Redis hanya
+        // untuk notifikasi real-time ke projection subscribers.
+        //
+        // MENGAPA fire-and-forget:
+        // publish_sync() → redis::get_connection() adalah SYNC BLOCKING.
+        // Jika dipanggil langsung (tanpa spawn_blocking) dari async fn ini
+        // → Tokio worker thread tersita → request lain (login dll) tidak bisa diproses.
+        // Jika dipanggil dengan spawn_blocking + AWAIT → register menunggu Redis,
+        // padahal data sudah aman di Postgres → tidak perlu.
+        //
+        // Dengan fire-and-forget (spawn_blocking tanpa await):
+        // - Register langsung return setelah Postgres commit → CEPAT
+        // - Worker thread tidak tersita → login tetap bisa diproses → CEPAT
+        // - Jika Redis gagal → hanya real-time feed yang terganggu, data tetap aman
+        let envelopes: Vec<_> = committed.iter().map(|s| s.to_envelope()).collect();
+        let bus_clone = bus.clone();
+        tokio::task::spawn_blocking(move || {
+            for envelope in envelopes {
+                if let Err(e) = bus_clone.publish(envelope) {
+                    tracing::warn!("[dispatch] Redis publish failed (non-fatal): {e:?}");
+                }
+            }
+        });
+        // Tidak di-await — fire and forget
+
+        Ok(committed)
     }
 
     pub fn inventory_get(
@@ -711,6 +901,14 @@ impl AppServices {
             AppServices::InMemory { inventory_projection, .. } => inventory_projection.get(tenant_id, item_id),
             #[cfg(feature = "redis")]
             AppServices::Persistent { inventory_projection, .. } => inventory_projection.get(tenant_id, item_id),
+        }
+    }
+
+    pub fn inventory_list(&self, tenant_id: TenantId) -> Vec<InventoryReadModel> {
+        match self {
+            AppServices::InMemory { inventory_projection, .. } => inventory_projection.list(tenant_id),
+            #[cfg(feature = "redis")]
+            AppServices::Persistent { inventory_projection, .. } => inventory_projection.list(tenant_id),
         }
     }
 
@@ -799,6 +997,14 @@ impl AppServices {
             AppServices::InMemory { ar_aging_projection, .. } => ar_aging_projection.list(tenant_id),
             #[cfg(feature = "redis")]
             AppServices::Persistent { ar_aging_projection, .. } => ar_aging_projection.list(tenant_id),
+        }
+    }
+
+    pub async fn tenants_list(&self) -> Vec<TenantId> {
+        match self {
+            AppServices::InMemory { event_store, .. } => event_store.list_tenants(),
+            #[cfg(feature = "redis")]
+            AppServices::Persistent { event_store, .. } => event_store.list_tenants_async().await.unwrap_or_default(),
         }
     }
 
@@ -963,4 +1169,183 @@ pub fn tenant_sse_stream(
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Auth stores (credential, tenant registry, invite)
+// ─────────────────────────────────────────────────────────────────────────────
 
+/// Stored credentials for a user (username → hashed password + ids).
+#[derive(Debug, Clone)]
+pub struct StoredCredential {
+    pub username: String,
+    pub password_hash: String,
+    pub user_id: UserId,
+    pub tenant_id: TenantId,
+}
+
+/// Stored invite token (short-lived, single-use).
+#[derive(Debug, Clone)]
+pub struct StoredInvite {
+    pub token: String,
+    pub tenant_id: TenantId,
+    pub tenant_name: String,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Thread-safe in-memory credential store.
+#[derive(Debug)]
+pub struct CredentialStore {
+    /// username → credential
+    inner: Arc<Mutex<HashMap<String, StoredCredential>>>,
+}
+
+impl Default for CredentialStore {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+impl Clone for CredentialStore {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl CredentialStore {
+    pub fn new() -> Self { Self::default() }
+
+    pub fn insert(&self, cred: StoredCredential) {
+        let username = cred.username.clone();
+        tracing::debug!("[CredentialStore] Inserting credential for username: {}", username);
+        self.inner.lock().unwrap().insert(cred.username.clone(), cred);
+        let count = self.inner.lock().unwrap().len();
+        tracing::debug!("[CredentialStore] Store now contains {} credentials", count);
+    }
+
+    pub fn find(&self, username: &str) -> Option<StoredCredential> {
+        let store = self.inner.lock().unwrap();
+        let count = store.len();
+        let exists = store.contains_key(username);
+        tracing::debug!("[CredentialStore] Looking for username: '{}' | Store has {} total credentials | Found: {}", username, count, exists);
+        if !exists {
+            let keys: Vec<_> = store.keys().cloned().collect();
+            tracing::debug!("[CredentialStore] Available usernames in store: {:?}", keys);
+        }
+        drop(store);
+        self.inner.lock().unwrap().get(username).cloned()
+    }
+
+    /// Find a credential by username, searching across all stored credentials
+    /// Returns Option of (credential, tenant_id, user_id) if found
+    pub fn find_all(&self, username: &str) -> Vec<StoredCredential> {
+        let store = self.inner.lock().unwrap();
+        store
+            .iter()
+            .filter(|(key, _)| key.as_str() == username)
+            .map(|(_, v)| v.clone())
+            .collect()
+    }
+
+    /// Check if a credential exists
+    pub fn exists(&self, username: &str) -> bool {
+        self.inner.lock().unwrap().contains_key(username)
+    }
+}
+
+/// Thread-safe in-memory tenant registry.
+#[derive(Debug)]
+pub struct TenantRegistry {
+    inner: Arc<Mutex<HashMap<TenantId, String>>>,
+}
+
+impl Default for TenantRegistry {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+impl Clone for TenantRegistry {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl TenantRegistry {
+    pub fn new() -> Self { Self::default() }
+
+    pub fn insert(&self, id: TenantId, name: String) {
+        self.inner.lock().unwrap().insert(id, name);
+    }
+
+    pub fn get_name(&self, id: TenantId) -> Option<String> {
+        self.inner.lock().unwrap().get(&id).cloned()
+    }
+}
+
+/// Thread-safe invite store.
+#[derive(Debug)]
+pub struct InviteStore {
+    inner: Arc<Mutex<HashMap<String, StoredInvite>>>,
+}
+
+impl Default for InviteStore {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+impl Clone for InviteStore {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl InviteStore {
+    pub fn new() -> Self { Self::default() }
+
+    pub fn insert(&self, invite: StoredInvite) {
+        self.inner.lock().unwrap().insert(invite.token.clone(), invite);
+    }
+
+    /// Validate and consume invite (single-use).
+    pub fn consume(&self, token: &str) -> Option<(TenantId, String)> {
+        let mut store = self.inner.lock().unwrap();
+        let invite = store.get(token)?;
+        if chrono::Utc::now() > invite.expires_at {
+            return None;
+        }
+        let result = (invite.tenant_id, invite.tenant_name.clone());
+        store.remove(token);
+        Some(result)
+    }
+}
+
+// Shared auth stores injected into AppServices as Extension.
+/// Combined auth stores, cheap to clone (all Arc-backed internally).
+#[derive(Debug, Clone)]
+pub struct AuthStores {
+    pub credentials: Arc<CredentialStore>,
+    pub tenants: Arc<TenantRegistry>,
+    pub invites: Arc<InviteStore>,
+}
+
+impl AuthStores {
+    pub fn new() -> Self {
+        Self {
+            credentials: Arc::new(CredentialStore::new()),
+            tenants: Arc::new(TenantRegistry::new()),
+            invites: Arc::new(InviteStore::new()),
+        }
+    }
+}

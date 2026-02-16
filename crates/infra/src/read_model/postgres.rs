@@ -110,40 +110,42 @@ impl TenantStore<InventoryItemId, InventoryReadModel> for PostgresInventoryStore
         let tenant_id_uuid = tenant_id.as_uuid();
         let item_id_uuid = key.0.as_uuid();
 
-        handle.block_on(async {
-            let span = Span::current();
-            span.record("operation", "get_inventory_stock");
+        tokio::task::block_in_place(|| {
+            handle.block_on(async {
+                let span = Span::current();
+                span.record("operation", "get_inventory_stock");
 
-            match sqlx::query(
-                r#"
-                SELECT
-                    tenant_id,
-                    item_id,
-                    name,
-                    quantity,
-                    updated_at
-                FROM inventory_stock
-                WHERE tenant_id = $1 AND item_id = $2
-                "#,
-            )
-            .bind(tenant_id_uuid)
-            .bind(item_id_uuid)
-            .fetch_optional(&*pool)
-            .await
-            {
-                Ok(Some(row)) => {
-                    match (row.try_get::<String, _>("name"), row.try_get::<i64, _>("quantity"), row.try_get::<uuid::Uuid, _>("item_id")) {
-                        (Ok(name), Ok(quantity), Ok(item_id)) => Some(InventoryReadModel {
-                            item_id: InventoryItemId(forgeerp_core::AggregateId::from_uuid(item_id)),
-                            name,
-                            quantity,
-                        }),
-                        _ => None,
+                match sqlx::query(
+                    r#"
+                    SELECT
+                        tenant_id,
+                        item_id,
+                        name,
+                        quantity,
+                        updated_at
+                    FROM inventory_stock
+                    WHERE tenant_id = $1 AND item_id = $2
+                    "#,
+                )
+                .bind(tenant_id_uuid)
+                .bind(item_id_uuid)
+                .fetch_optional(&*pool)
+                .await
+                {
+                    Ok(Some(row)) => {
+                        match (row.try_get::<String, _>("name"), row.try_get::<i64, _>("quantity"), row.try_get::<uuid::Uuid, _>("item_id")) {
+                            (Ok(name), Ok(quantity), Ok(item_id)) => Some(InventoryReadModel {
+                                item_id: InventoryItemId(forgeerp_core::AggregateId::from_uuid(item_id)),
+                                name,
+                                quantity,
+                            }),
+                            _ => None,
+                        }
                     }
+                    Ok(None) => None,
+                    Err(_) => None,
                 }
-                Ok(None) => None,
-                Err(_) => None,
-            }
+            })
         })
     }
 
@@ -195,41 +197,43 @@ impl TenantStore<InventoryItemId, InventoryReadModel> for PostgresInventoryStore
         let pool = self.pool.clone();
         let tenant_id_uuid = tenant_id.as_uuid();
 
-        handle.block_on(async {
-            let span = Span::current();
-            span.record("operation", "list_inventory_stock");
+        tokio::task::block_in_place(|| {
+            handle.block_on(async {
+                let span = Span::current();
+                span.record("operation", "list_inventory_stock");
 
-            match sqlx::query(
-                r#"
-                SELECT
-                    tenant_id,
-                    item_id,
-                    name,
-                    quantity,
-                    updated_at
-                FROM inventory_stock
-                WHERE tenant_id = $1
-                ORDER BY updated_at DESC
-                "#,
-            )
-            .bind(tenant_id_uuid)
-            .fetch_all(&*pool)
-            .await
-            {
-                Ok(rows) => rows.into_iter()
-                    .filter_map(|r| {
-                        match (r.try_get::<uuid::Uuid, _>("item_id"), r.try_get::<String, _>("name"), r.try_get::<i64, _>("quantity")) {
-                            (Ok(item_id), Ok(name), Ok(quantity)) => Some(InventoryReadModel {
-                                item_id: InventoryItemId(forgeerp_core::AggregateId::from_uuid(item_id)),
-                                name,
-                                quantity,
-                            }),
-                            _ => None,
-                        }
-                    })
-                    .collect(),
-                Err(_) => vec![],
-            }
+                match sqlx::query(
+                    r#"
+                    SELECT
+                        tenant_id,
+                        item_id,
+                        name,
+                        quantity,
+                        updated_at
+                    FROM inventory_stock
+                    WHERE tenant_id = $1
+                    ORDER BY updated_at DESC
+                    "#,
+                )
+                .bind(tenant_id_uuid)
+                .fetch_all(&*pool)
+                .await
+                {
+                    Ok(rows) => rows.into_iter()
+                        .filter_map(|r| {
+                            match (r.try_get::<uuid::Uuid, _>("item_id"), r.try_get::<String, _>("name"), r.try_get::<i64, _>("quantity")) {
+                                (Ok(item_id), Ok(name), Ok(quantity)) => Some(InventoryReadModel {
+                                    item_id: InventoryItemId(forgeerp_core::AggregateId::from_uuid(item_id)),
+                                    name,
+                                    quantity,
+                                }),
+                                _ => None,
+                            }
+                        })
+                        .collect(),
+                    Err(_) => vec![],
+                }
+            })
         })
     }
 

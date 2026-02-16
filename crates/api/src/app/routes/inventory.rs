@@ -21,7 +21,7 @@ pub fn router() -> Router {
     Router::new()
         .route("/anomalies", get(get_inventory_anomalies))
         .route("/:id/insights", get(get_inventory_item_insights))
-        .route("/items", post(create_item))
+        .route("/items", post(create_item).get(list_items))
         .route("/items/:id/adjust", post(adjust_stock))
         .route("/items/:id", get(get_item))
 }
@@ -122,6 +122,18 @@ pub async fn adjust_stock(
         })),
     )
         .into_response()
+}
+
+pub async fn list_items(
+    Extension(services): Extension<Arc<AppServices>>,
+    Extension(tenant): Extension<crate::context::TenantContext>,
+) -> axum::response::Response {
+    let items = services
+        .inventory_list(tenant.tenant_id())
+        .into_iter()
+        .map(dto::inventory_to_json)
+        .collect::<Vec<_>>();
+    (StatusCode::OK, Json(serde_json::json!({ "items": items }))).into_response()
 }
 
 pub async fn get_item(
