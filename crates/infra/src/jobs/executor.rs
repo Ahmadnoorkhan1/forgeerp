@@ -10,8 +10,8 @@ use tracing::{debug, error, info, warn};
 
 use forgeerp_core::TenantId;
 
-use super::store::{JobStore, JobStoreError};
-use super::types::{Job, JobId, JobKind, JobResult, JobStatus};
+use super::store::{JobStore};
+use super::types::{Job, JobKind, JobResult, JobStatus};
 
 /// Job handler function type.
 pub type JobHandler = Box<dyn Fn(&Job) -> JobResult + Send + Sync>;
@@ -207,7 +207,7 @@ impl<S: JobStore + 'static> JobExecutor<S> {
     }
 }
 
-fn executor_loop<S: JobStore>(
+fn executor_loop<S: JobStore + 'static>(
     executor: JobExecutor<S>,
     config: JobExecutorConfig,
     shutdown_rx: mpsc::Receiver<()>,
@@ -285,7 +285,7 @@ fn executor_loop<S: JobStore>(
     info!(executor = %config.name, "job executor stopped");
 }
 
-fn execute_job<S: JobStore>(executor: &JobExecutor<S>, job: &mut Job) -> Result<(), String> {
+fn execute_job<S: JobStore + 'static>(executor: &JobExecutor<S>, job: &mut Job) -> Result<(), String> {
     let handler = match executor.get_handler(&job.kind) {
         Some(h) => h,
         None => {

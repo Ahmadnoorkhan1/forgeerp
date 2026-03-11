@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use chrono::{DateTime, Utc};
+use chrono::{Utc};
 
 use forgeerp_core::TenantId;
 
@@ -141,7 +141,7 @@ impl JobStore for InMemoryJobStore {
 
     fn claim_next(&self, tenant_id: Option<TenantId>) -> Result<Option<Job>, JobStoreError> {
         let mut jobs = self.jobs.write().unwrap();
-        let now = Utc::now();
+        let _now = Utc::now();
 
         // Find the oldest ready pending job
         let mut candidates: Vec<_> = jobs

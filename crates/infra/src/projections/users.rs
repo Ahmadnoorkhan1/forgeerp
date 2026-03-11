@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use forgeerp_auth::{
-    Role, RoleAssigned, RoleRevoked, UserActivated, UserCreated, UserEvent, UserId,
+    RoleAssigned, RoleRevoked, UserActivated, UserCreated, UserEvent, UserId,
     UserStatus, UserSuspended,
 };
 use forgeerp_core::TenantId;
