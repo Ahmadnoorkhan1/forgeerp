@@ -1,0 +1,1 @@
+RUST_LOG=forgeerp_api=debug,forgeerp_api::app::routes::auth=info USE_PERSISTENT_STORES=true DATABASE_URL=postgres://forgeerp:forgeerp@localhost:5432/forgeerp REDIS_URL=redis://localhost:6379 BCRYPT_COST=4 cargo run -p forgeerp-api --features redis

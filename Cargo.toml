@@ -16,12 +16,13 @@ members = [
   "crates/infra",
   "crates/observability",
   "crates/desktop",
+  "crates/frontend",
 ]
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-uuid = { version = "1", features = ["v7", "serde"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "1"
 anyhow = "1"
@@ -29,3 +30,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
 proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
+
+[profile.release]
+opt-level   = "z"
+lto         = true
+codegen-units = 1

@@ -1,118 +1,166 @@
+//! In-memory, tenant-scoped event store for testing and local development.
+//!
+//! `InMemoryEventStore` stores events in-memory using `Arc<RwLock<>>` for thread-safe access.
+//! It's designed for integration tests and local development where durability isn't required.
+//!
+//! ## Design
+//!
+//! - **Tenant isolation**: Enforced by organizing events by `(tenant_id, aggregate_id)`
+//! - **Optimistic locking**: Version checks are performed before appending
+//! - **Sequence numbers**: Assigned monotonically per stream (tenant_id + aggregate_id)
+//! - **Atomicity**: All events in a batch are appended or none (no partial appends)
+//! - **Thread-safe**: Uses `Arc<RwLock<>>` for concurrent read/write access
+//!
+//! ## Limitations
+//!
+//! - No persistence across restarts (data lost when application exits)
+//! - Not suitable for production use (data loss risk)
+//! - Memory grows unbounded (no cleanup/archival mechanisms)
+
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
+use uuid::Uuid;
 
 use forgeerp_core::{AggregateId, ExpectedVersion, TenantId};
 
-use super::query::{EventFilter, EventQuery, EventQueryResult, Pagination};
-use super::r#trait::{EventStore, EventStoreError, StoredEvent, UncommittedEvent};
+use crate::event_store::{
+    EventFilter, EventQuery, EventQueryResult, EventStoreError, Pagination, StoredEvent,
+    UncommittedEvent,
+};
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-struct StreamKey {
-    tenant_id: TenantId,
-    aggregate_id: AggregateId,
-}
-
-/// In-memory append-only event store.
+/// In-memory event store implementation for testing and development.
 ///
-/// Intended for tests/dev. Not optimized for performance.
-#[derive(Debug, Default)]
+/// Stores events in-memory organized by `(tenant_id, aggregate_id)` stream.
+/// Each stream maintains events with monotonically increasing sequence numbers.
+#[derive(Debug, Clone)]
 pub struct InMemoryEventStore {
-    streams: RwLock<HashMap<StreamKey, Vec<StoredEvent>>>,
+    /// Stores events organized by (tenant_id, aggregate_id) streams.
+    ///
+    /// Structure:
+    /// - Outer key: TenantId (tenant isolation)
+    /// - Middle key: AggregateId (per-aggregate streams)
+    /// - Inner Vec: StoredEvent entries (ordered by sequence_number)
+    inner: Arc<RwLock<HashMap<(TenantId, AggregateId), Vec<StoredEvent>>>>,
 }
 
 impl InMemoryEventStore {
+    /// Create a new empty in-memory event store.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            inner: Arc::new(RwLock::new(HashMap::new())),
+        }
     }
 
-    fn current_version(stream: &[StoredEvent]) -> u64 {
-        stream.last().map(|e| e.sequence_number).unwrap_or(0)
+    /// Get the current version (sequence_number) of a stream.
+    ///
+    /// Returns 0 if the stream doesn't exist (first event will be sequence 1).
+    fn get_stream_version(
+        &self,
+        tenant_id: TenantId,
+        aggregate_id: AggregateId,
+    ) -> Result<u64, EventStoreError> {
+        let store = self.inner.read().map_err(|e| {
+            EventStoreError::InvalidAppend(format!("lock acquisition failed: {}", e))
+        })?;
+
+        let current_version = store
+            .get(&(tenant_id, aggregate_id))
+            .map(|events| {
+                events
+                    .last()
+                    .map(|e| e.sequence_number)
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0);
+
+        Ok(current_version)
     }
 }
 
-impl EventStore for InMemoryEventStore {
+impl Default for InMemoryEventStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl crate::event_store::EventStore for InMemoryEventStore {
     fn append(
         &self,
         events: Vec<UncommittedEvent>,
         expected_version: ExpectedVersion,
     ) -> Result<Vec<StoredEvent>, EventStoreError> {
         if events.is_empty() {
-            return Ok(vec![]);
+            return Ok(Vec::new());
         }
 
-        // All events must target the same tenant + aggregate stream.
-        let tenant_id = events[0].tenant_id;
-        let aggregate_id = events[0].aggregate_id;
-        let aggregate_type = events[0].aggregate_type.clone();
+        // Validate all events are for the same tenant and aggregate
+        let first_tenant = events[0].tenant_id;
+        let first_aggregate = events[0].aggregate_id;
 
-        for (idx, e) in events.iter().enumerate() {
-            if e.tenant_id != tenant_id {
-                return Err(EventStoreError::TenantIsolation(format!(
-                    "batch contains multiple tenant_ids (index {idx})"
-                )));
+        for event in &events {
+            if event.tenant_id != first_tenant {
+                return Err(EventStoreError::TenantIsolation(
+                    "all events must belong to same tenant".to_string(),
+                ));
             }
-            if e.aggregate_id != aggregate_id {
-                return Err(EventStoreError::InvalidAppend(format!(
-                    "batch contains multiple aggregate_ids (index {idx})"
-                )));
-            }
-            if e.aggregate_type != aggregate_type {
-                return Err(EventStoreError::AggregateTypeMismatch(format!(
-                    "batch contains multiple aggregate_types (index {idx})"
-                )));
+            if event.aggregate_id != first_aggregate {
+                return Err(EventStoreError::InvalidAppend(
+                    "all events must target same aggregate".to_string(),
+                ));
             }
         }
 
-        let key = StreamKey {
-            tenant_id,
-            aggregate_id,
-        };
+        let mut store = self.inner.write().map_err(|e| {
+            EventStoreError::InvalidAppend(format!("lock acquisition failed: {}", e))
+        })?;
 
-        let mut streams = self
-            .streams
-            .write()
-            .map_err(|_| EventStoreError::InvalidAppend("lock poisoned".to_string()))?;
+        let stream_key = (first_tenant, first_aggregate);
 
-        let stream = streams.entry(key).or_default();
-        let current = Self::current_version(stream);
+        // Get current version and validate optimistic concurrency
+        let current_version = store
+            .get(&stream_key)
+            .map(|s| s.last().map(|e| e.sequence_number).unwrap_or(0))
+            .unwrap_or(0);
 
-        if !expected_version.matches(current) {
-            return Err(EventStoreError::Concurrency(format!(
-                "expected {expected_version:?}, found {current}"
-            )));
-        }
-
-        // Enforce aggregate type stability across the stream.
-        if let Some(existing) = stream.first() {
-            if existing.aggregate_type != aggregate_type {
-                return Err(EventStoreError::AggregateTypeMismatch(format!(
-                    "stream aggregate_type is '{}', attempted append with '{}'",
-                    existing.aggregate_type, aggregate_type
-                )));
+        // Check optimistic concurrency
+        match expected_version {
+            ExpectedVersion::Any => {
+                // No version check needed
+            }
+            ExpectedVersion::Exact(expected) => {
+                if current_version != expected {
+                    return Err(EventStoreError::Concurrency(format!(
+                        "version mismatch: expected {}, got {}",
+                        expected, current_version
+                    )));
+                }
             }
         }
 
-        // Assign sequence numbers and append (append-only).
-        let mut next = current + 1;
-        let mut committed = Vec::with_capacity(events.len());
-        for e in events {
-            let stored = StoredEvent {
-                event_id: e.event_id,
-                tenant_id: e.tenant_id,
-                aggregate_id: e.aggregate_id,
-                aggregate_type: e.aggregate_type,
-                sequence_number: next,
-                event_type: e.event_type,
-                event_version: e.event_version,
-                occurred_at: e.occurred_at,
-                payload: e.payload,
-            };
-            next += 1;
-            stream.push(stored.clone());
-            committed.push(stored);
+        // Assign sequence numbers and create stored events
+        let mut stored_events = Vec::with_capacity(events.len());
+        for (i, event) in events.into_iter().enumerate() {
+            let sequence_number = current_version + (i as u64) + 1;
+            stored_events.push(StoredEvent {
+                event_id: event.event_id,
+                tenant_id: event.tenant_id,
+                aggregate_id: event.aggregate_id,
+                aggregate_type: event.aggregate_type,
+                sequence_number,
+                event_type: event.event_type,
+                event_version: event.event_version,
+                occurred_at: event.occurred_at,
+                payload: event.payload,
+            });
         }
 
-        Ok(committed)
+        // Append to stream atomically
+        store
+            .entry(stream_key)
+            .or_insert_with(Vec::new)
+            .extend(stored_events.clone());
+
+        Ok(stored_events)
     }
 
     fn load_stream(
@@ -120,17 +168,34 @@ impl EventStore for InMemoryEventStore {
         tenant_id: TenantId,
         aggregate_id: AggregateId,
     ) -> Result<Vec<StoredEvent>, EventStoreError> {
-        let key = StreamKey {
-            tenant_id,
-            aggregate_id,
+        let store = self.inner.read().map_err(|e| {
+            EventStoreError::InvalidAppend(format!("lock acquisition failed: {}", e))
+        })?;
+
+        let events = store
+            .get(&(tenant_id, aggregate_id))
+            .cloned()
+            .unwrap_or_default();
+
+        Ok(events)
+    }
+}
+
+impl InMemoryEventStore {
+    /// List all tenant IDs that have events in the store.
+    pub fn list_tenants(&self) -> Vec<TenantId> {
+        let store = match self.inner.read() {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
         };
-
-        let streams = self
-            .streams
-            .read()
-            .map_err(|_| EventStoreError::InvalidAppend("lock poisoned".to_string()))?;
-
-        Ok(streams.get(&key).cloned().unwrap_or_default())
+        let mut tenants: Vec<TenantId> = store
+            .keys()
+            .map(|(tenant_id, _)| *tenant_id)
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        tenants.sort_by(|a, b| a.as_uuid().cmp(b.as_uuid()));
+        tenants
     }
 }
 
@@ -142,103 +207,57 @@ impl EventQuery for InMemoryEventStore {
         filter: EventFilter,
         pagination: Pagination,
     ) -> Result<EventQueryResult, EventStoreError> {
-        // Use spawn_blocking since we're accessing RwLock (blocking operation)
-        let streams = {
-            let guard = self
-                .streams
-                .read()
-                .map_err(|_| EventStoreError::InvalidAppend("lock poisoned".to_string()))?;
-            guard.clone()
-        };
+        let store = self.inner.read().map_err(|e| {
+            EventStoreError::InvalidAppend(format!("lock acquisition failed: {}", e))
+        })?;
 
-        // Collect all events for the tenant
-        let mut all_events: Vec<StoredEvent> = Vec::new();
-        for (key, stream) in streams.iter() {
-            if key.tenant_id == tenant_id {
-                all_events.extend(stream.iter().cloned());
-            }
-        }
-
-        // Apply filters
-        let mut filtered: Vec<StoredEvent> = all_events
-            .into_iter()
-            .filter(|e| {
-                if let Some(agg_id) = filter.aggregate_id {
-                    if e.aggregate_id != agg_id {
-                        return false;
-                    }
-                }
-                if let Some(ref agg_type) = filter.aggregate_type {
-                    if e.aggregate_type != *agg_type {
-                        return false;
-                    }
-                }
-                if let Some(ref evt_type) = filter.event_type {
-                    if e.event_type != *evt_type {
-                        return false;
-                    }
-                }
-                if let Some(after) = filter.occurred_after {
-                    if e.occurred_at < after {
-                        return false;
-                    }
-                }
-                if let Some(before) = filter.occurred_before {
-                    if e.occurred_at > before {
-                        return false;
-                    }
-                }
-                true
-            })
+        // Collect all matching events for this tenant
+        let mut matching_events: Vec<StoredEvent> = store
+            .iter()
+            .filter(|(key, _)| key.0 == tenant_id) // Tenant isolation
+            .flat_map(|(_, events)| events.clone())
             .collect();
 
-        // Sort by occurred_at (descending), then sequence_number (ascending)
-        filtered.sort_by(|a, b| {
+        // Apply filters
+        if let Some(aggregate_id) = filter.aggregate_id {
+            matching_events.retain(|e| e.aggregate_id == aggregate_id);
+        }
+
+        if let Some(aggregate_type) = filter.aggregate_type {
+            matching_events.retain(|e| e.aggregate_type == aggregate_type);
+        }
+
+        if let Some(event_type) = filter.event_type {
+            matching_events.retain(|e| e.event_type == event_type);
+        }
+
+        if let Some(occurred_after) = filter.occurred_after {
+            matching_events.retain(|e| e.occurred_at > occurred_after);
+        }
+
+        if let Some(occurred_before) = filter.occurred_before {
+            matching_events.retain(|e| e.occurred_at < occurred_before);
+        }
+
+        // Sort by occurred_at DESC (newest first), then sequence_number ASC
+        matching_events.sort_by(|a, b| {
             match b.occurred_at.cmp(&a.occurred_at) {
                 std::cmp::Ordering::Equal => a.sequence_number.cmp(&b.sequence_number),
                 other => other,
             }
         });
 
-        let total = filtered.len() as u64;
+        let total = matching_events.len() as u64;
 
         // Apply pagination
         let start = pagination.offset as usize;
-        let paginated = filtered.into_iter().skip(start).take(pagination.limit as usize).collect();
+        let end = (start + pagination.limit as usize).min(matching_events.len());
+        let events = matching_events[start..end].to_vec();
 
-        let has_more = total > (pagination.offset + pagination.limit) as u64;
-
-        Ok(EventQueryResult {
-            events: paginated,
-            total,
-            pagination,
-            has_more,
-        })
-    }
-
-    async fn get_aggregate_events(
-        &self,
-        tenant_id: TenantId,
-        aggregate_id: AggregateId,
-        pagination: Option<Pagination>,
-    ) -> Result<EventQueryResult, EventStoreError> {
-        // For aggregate streams, use load_stream (sequence order) instead of query_events (time order)
-        let all_events = self.load_stream(tenant_id, aggregate_id)?;
-
-        let total = all_events.len() as u64;
-        let pagination = pagination.unwrap_or_default();
-
-        let start = pagination.offset as usize;
-        let paginated: Vec<StoredEvent> = all_events
-            .into_iter()
-            .skip(start)
-            .take(pagination.limit as usize)
-            .collect();
-
-        let has_more = total > (pagination.offset + pagination.limit) as u64;
+        let has_more = end < matching_events.len();
 
         Ok(EventQueryResult {
-            events: paginated,
+            events,
             total,
             pagination,
             has_more,
@@ -248,26 +267,93 @@ impl EventQuery for InMemoryEventStore {
     async fn get_event_by_id(
         &self,
         tenant_id: TenantId,
-        event_id: uuid::Uuid,
+        event_id: Uuid,
     ) -> Result<Option<StoredEvent>, EventStoreError> {
-        let streams = {
-            let guard = self
-                .streams
-                .read()
-                .map_err(|_| EventStoreError::InvalidAppend("lock poisoned".to_string()))?;
-            guard.clone()
-        };
-        
-        for (key, stream) in streams.iter() {
-            if key.tenant_id == tenant_id {
-                if let Some(event) = stream.iter().find(|e| e.event_id == event_id) {
-                    return Ok(Some(event.clone()));
-                }
-            }
-        }
-        
-        Ok(None)
+        let store = self.inner.read().map_err(|e| {
+            EventStoreError::InvalidAppend(format!("lock acquisition failed: {}", e))
+        })?;
+
+        let event = store
+            .iter()
+            .filter(|(key, _)| key.0 == tenant_id) // Tenant isolation
+            .flat_map(|(_, events)| events)
+            .find(|e| e.event_id == event_id)
+            .cloned();
+
+        Ok(event)
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
+    #[test]
+    fn test_new_empty_store() {
+        let store = InMemoryEventStore::new();
+        let inner = store.inner.read().unwrap();
+        assert!(inner.is_empty());
+    }
+
+    #[test]
+    fn test_append_events() {
+        let store = InMemoryEventStore::new();
+        let tenant_id = TenantId::new();
+        let aggregate_id = AggregateId::new();
+
+        let event = UncommittedEvent {
+            event_id: Uuid::new_v7(),
+            tenant_id,
+            aggregate_id,
+            aggregate_type: "test.item".to_string(),
+            event_type: "test.created".to_string(),
+            event_version: 1,
+            occurred_at: chrono::Utc::now(),
+            payload: serde_json::json!({"name": "test"}),
+        };
+
+        let result = store.append(vec![event], ExpectedVersion::Any);
+        assert!(result.is_ok());
+
+        let stored = result.unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].sequence_number, 1);
+    }
+
+    #[test]
+    fn test_version_check() {
+        let store = InMemoryEventStore::new();
+        let tenant_id = TenantId::new();
+        let aggregate_id = AggregateId::new();
+
+        // First append should succeed
+        let event1 = UncommittedEvent {
+            event_id: Uuid::new_v7(),
+            tenant_id,
+            aggregate_id,
+            aggregate_type: "test.item".to_string(),
+            event_type: "test.created".to_string(),
+            event_version: 1,
+            occurred_at: chrono::Utc::now(),
+            payload: serde_json::json!({}),
+        };
+
+        let result1 = store.append(vec![event1], ExpectedVersion::Any);
+        assert!(result1.is_ok());
+
+        // Second append with wrong version should fail
+        let event2 = UncommittedEvent {
+            event_id: Uuid::new_v7(),
+            tenant_id,
+            aggregate_id,
+            aggregate_type: "test.item".to_string(),
+            event_type: "test.updated".to_string(),
+            event_version: 1,
+            occurred_at: chrono::Utc::now(),
+            payload: serde_json::json!({}),
+        };
+
+        let result2 = store.append(vec![event2], ExpectedVersion::Exact(999));
+        assert!(result2.is_err());
+    }
+}

@@ -1,0 +1,32 @@
+[package]
+name = "forgeerp-frontend"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "forgeerp_frontend"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+# Leptos CSR (client-side rendering via WASM)
+leptos        = { version = "0.6", features = ["csr"] }
+leptos_router = { version = "0.6", features = ["csr"] }
+
+# WASM bindings
+wasm-bindgen         = "=0.2.106"
+wasm-bindgen-futures = "0.4"
+js-sys               = "0.3"
+web-sys              = { version = "0.3", features = ["Window", "console"] }
+
+# HTTP + storage
+gloo-net     = { version = "0.5", features = ["http"] }
+gloo-storage = "0.3"
+
+# Serialization
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Panic hook for better WASM error messages
+console_error_panic_hook = "0.1"
+

@@ -1,0 +1,1 @@
+cargo run -p forgeerp-api

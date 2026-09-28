@@ -2,6 +2,7 @@ use axum::{routing::get, Router};
 
 pub mod admin;
 pub mod ar;
+pub mod auth;
 pub mod common;
 pub mod customers;
 pub mod event_stream;
@@ -18,7 +19,7 @@ pub mod suppliers;
 pub mod system;
 
 /// Router for all authenticated (tenant-scoped) endpoints.
-pub fn router() -> Router {
+pub fn protected_router() -> Router {
     Router::new()
         .route("/whoami", get(system::whoami))
         .route("/stream", get(system::stream))
@@ -38,4 +39,9 @@ pub fn router() -> Router {
         .nest("/admin/stream", event_stream::router())
 }
 
-
+/// Public router (no auth required): register + login.
+pub fn public_router() -> Router {
+    Router::new()
+        .route("/health", get(system::health))
+        .nest("/auth", auth::router())
+}

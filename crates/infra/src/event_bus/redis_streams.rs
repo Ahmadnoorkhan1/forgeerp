@@ -309,7 +309,7 @@ impl RedisStreamsEventBus {
         block_ms: u64,
     ) -> Result<Vec<StreamMessage>, RedisStreamsError> {
         // XREADGROUP with ">" to read new entries for this consumer group
-        let result: redis::RedisResult<HashMap<String, Vec<redis::Value>>> = redis::cmd("XREADGROUP")
+        let result: redis::RedisResult<redis::Value> = redis::cmd("XREADGROUP")
             .arg("GROUP")
             .arg(group_name)
             .arg(consumer_name)
@@ -334,10 +334,28 @@ impl RedisStreamsEventBus {
             }
         };
 
-        let entries = stream_data
-            .get(&self.stream_key)
-            .cloned()
-            .unwrap_or_default();
+        // Parse response manually: [[stream_key, [[message_id, [field1, value1, ...]], ...]]]
+        let entries = match stream_data {
+            redis::Value::Bulk(outer) => {
+                // Outer is array of [stream_key, entries]
+                if outer.is_empty() {
+                    return Ok(vec![]); // No data
+                }
+
+                // First element should be an array [stream_key, entries]
+                match outer.get(0) {
+                    Some(redis::Value::Bulk(stream_data)) if stream_data.len() >= 2 => {
+                        // stream_data[1] contains the entries
+                        match stream_data.get(1) {
+                            Some(redis::Value::Bulk(entries_array)) => entries_array.clone(),
+                            _ => return Ok(vec![]),
+                        }
+                    }
+                    _ => return Ok(vec![]),
+                }
+            }
+            _ => return Ok(vec![]), // Timeout or no data
+        };
 
         let mut messages = Vec::new();
         for entry in entries {

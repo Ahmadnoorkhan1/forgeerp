@@ -50,12 +50,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    command: sqlx migrate --source /app/migrations run
+    command: sqlx migrate run --source /app/migrations
     volumes:
       - ./docker/migrations:/app/migrations:ro
 
 volumes:
   postgres_data:
   redis_data:
-
-

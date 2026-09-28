@@ -10,8 +10,8 @@ use tracing::{debug, error, info, warn};
 
 use forgeerp_core::TenantId;
 
-use super::store::{JobStore, JobStoreError};
-use super::types::{Job, JobId, JobKind, JobResult, JobStatus};
+use super::store::JobStore;
+use super::types::{Job, JobKind, JobResult, JobStatus};
 
 /// Job handler function type.
 pub type JobHandler = Box<dyn Fn(&Job) -> JobResult + Send + Sync>;
@@ -207,7 +207,7 @@ impl<S: JobStore + 'static> JobExecutor<S> {
     }
 }
 
-fn executor_loop<S: JobStore>(
+fn executor_loop<S: JobStore + 'static>(
     executor: JobExecutor<S>,
     config: JobExecutorConfig,
     shutdown_rx: mpsc::Receiver<()>,
@@ -251,7 +251,7 @@ fn executor_loop<S: JobStore>(
                     s.jobs_processed += 1;
                     match result {
                         Ok(()) => s.jobs_succeeded += 1,
-                        Err(ref e) if job.status.is_terminal() => {
+                        Err(ref _e) if job.status.is_terminal() => {
                             s.jobs_failed += 1;
                             if matches!(job.status, JobStatus::DeadLettered { .. }) {
                                 s.jobs_dead_lettered += 1;
@@ -285,7 +285,7 @@ fn executor_loop<S: JobStore>(
     info!(executor = %config.name, "job executor stopped");
 }
 
-fn execute_job<S: JobStore>(executor: &JobExecutor<S>, job: &mut Job) -> Result<(), String> {
+fn execute_job<S: JobStore + 'static>(executor: &JobExecutor<S>, job: &mut Job) -> Result<(), String> {
     let handler = match executor.get_handler(&job.kind) {
         Some(h) => h,
         None => {
@@ -368,7 +368,7 @@ mod tests {
         executor.register_handler("test", |_job| JobResult::Failure("test error".to_string()));
 
         let tenant = test_tenant();
-        let mut job = Job::new(tenant, JobKind::custom("test"), serde_json::json!({}))
+        let job = Job::new(tenant, JobKind::custom("test"), serde_json::json!({}))
             .with_retry_policy(super::super::types::RetryPolicy {
                 max_attempts: 2,
                 ..Default::default()

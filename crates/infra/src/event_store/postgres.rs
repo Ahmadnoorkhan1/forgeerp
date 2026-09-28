@@ -27,6 +27,7 @@ use chrono::{DateTime, Utc};
 use sqlx::{FromRow, PgPool, Postgres, Row, Transaction};
 use std::sync::Arc;
 use tracing::{instrument, Span};
+use uuid::Uuid;
 
 use forgeerp_core::{AggregateId, ExpectedVersion, TenantId};
 
@@ -432,6 +433,23 @@ impl PostgresEventStore {
     }
 }
 
+impl PostgresEventStore {
+    /// Async list_tenants operation for PostgreSQL backend.
+    pub async fn list_tenants_async(&self) -> Result<Vec<TenantId>, EventStoreError> {
+        let rows = sqlx::query_scalar::<_, Uuid>(
+            "SELECT DISTINCT tenant_id FROM events ORDER BY tenant_id"
+        )
+        .fetch_all(&*self.pool)
+        .await
+        .map_err(|e| EventStoreError::InvalidAppend(format!("query failed: {}", e)))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|uuid| TenantId::from_uuid(uuid))
+            .collect())
+    }
+}
+
 /// Aggregate snapshot for fast rehydration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
@@ -639,10 +657,9 @@ impl EventStore for PostgresEventStore {
         let tenant_id = events[0].tenant_id;
         let aggregate_id = events[0].aggregate_id;
 
-        // Use block_on to run the async append operation
-        handle.block_on(
-            self.append_events(tenant_id, aggregate_id, events, expected_version)
-        )
+        tokio::task::block_in_place(|| {
+            handle.block_on(self.append_events(tenant_id, aggregate_id, events, expected_version))
+        })
     }
 
     fn load_stream(
@@ -655,7 +672,9 @@ impl EventStore for PostgresEventStore {
                 "PostgresEventStore requires async runtime (tokio). Ensure you're calling from within a tokio runtime context.".to_string()
             ))?;
 
-        handle.block_on(self.load_stream(tenant_id, aggregate_id))
+        tokio::task::block_in_place(|| {
+            handle.block_on(self.load_stream(tenant_id, aggregate_id))
+        })
     }
 }
 
